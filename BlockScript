@@ -1,1 +1,185 @@
-e
+local Blocks = game.Workspace.Ores
+local RS = game:GetService("ReplicatedStorage")
+local RE2 = RS:WaitForChild("Event_swingpickaxe")
+local RE3 = RS:WaitForChild("Event_collectore")
+local RE4 = RS:WaitForChild("Event_orehealth")
+local players = {}
+
+-- SET ORE VARIBLES
+local coal = 1
+local iron = 0
+local nick = 0
+local copp = 0
+local silv = 0
+local gold = 0
+local diam = 0
+local plat = 0
+local uran = 0
+local rhod = 0
+local obid = 0
+local krun = 0
+local crib = 0
+local sili = 0
+local icee = 0
+
+-- SET ORE VISUAL VARIBLES/DATA
+local info = {
+	p1 = {n = "Coal",h = 2,m = Enum.Material.Cobblestone,c = Color3.new(0.105882, 0.164706, 0.207843)},
+	p2 = {n = "Iron",h = 3,m = Enum.Material.Fabric,c = Color3.new(1, 0.705882, 0.835294)},
+	p3 = {n = "Nickel",h = 4,m = Enum.Material.Marble,c = Color3.new(0.623529, 0.631373, 0.67451)},
+	p4 = {n = "Copper",h = 8,m = Enum.Material.Slate,c = Color3.new(0.8, 0.556863, 0.411765)},
+	p5 = {n = "Silver",h = 14,m = Enum.Material.Plastic,c = Color3.new(0.639216, 0.635294, 0.647059)},
+	p6 = {n = "Gold",h = 24,m = Enum.Material.Foil,c = Color3.new(1, 0.784314, 0)},
+	p7 = {n = "Diamond",h = 36,m = Enum.Material.Marble,c = Color3.new(0, 1, 1)},
+	p8 = {n = "Platinum",h = 44,m = Enum.Material.Slate,c = Color3.new(1, 1, 1)},
+	p9 = {n = "Uranium",h = 77,m = Enum.Material.Neon,c = Color3.new(0.329412, 0.803922, 0.109804)},
+	p10 = {n = "Rhodium",h = 67,m = Enum.Material.Pebble,c = Color3.new(1, 0, 0.74902)},
+	p11 = {n = "Obsidian",h = 59,m = Enum.Material.SmoothPlastic,c = Color3.new(0, 0, 0)},
+	p12 = {n = "Krunker",h = 112,m = Enum.Material.Neon ,c = Color3.new(0.670588, 0.203922, 1)},
+	p13 = {n = "Cribble",h = 97,m = Enum.Material.Pebble,c = Color3.new(0, 0.0980392, 1)},
+	p14 = {n = "Silidac",h = 227,m = Enum.Material.Neon,c = Color3.new(1, 0.545098, 0.172549)},
+	p15 = {n = "Ice",h = 147,m = Enum.Material.Sand,c = Color3.new(0.501961, 0.733333, 0.858824)},
+}
+
+-- CREATE NEW ORE
+local function CreateNewOre(block)
+	local oretype= "Coal"
+	local depth = block.Position.Y
+	local NewNumber = 1
+
+	-- ORE SPAWN CHANCE VIA BLOCK DEPTH
+	if depth < 0 and depth > -80 then coal=403 iron=30 nick=10 copp=10 silv=6 gold=3 diam=1 plat=0 uran=0 rhod=0 obid=0 krun=0 crib=0 sili=0 icee=0
+	elseif depth < -80 and depth > -140 then coal=25 iron=10 nick=40 copp=10 silv=7 gold=6 diam=2 plat=0 uran=0 rhod=0 obid=0 krun=0 crib=0 sili=0 icee=0
+	elseif depth < -140 and depth > -200 then coal=10 iron=0 nick=30 copp=40 silv=0 gold=0 diam=10 plat=6 uran=4 rhod=0 obid=0 krun=0 crib=0 sili=0 icee=0							
+	elseif depth < -200 and depth > -260 then coal=0 iron=0 nick=0 copp=0 silv=0 gold=0 diam=0 plat=0 uran=0 rhod=0 obid=0 krun=0 crib=0 sili=0 icee=0
+	end
+
+	-- GET TOTAL FOR MAX RANDOM NUMBER
+	local Total = (coal+iron+nick+copp+silv+gold+diam+uran+rhod+obid+krun+crib+sili+icee)
+	-- RANDOM CHANCE
+	local Random = math.random(0,Total)
+	-- SET LOWEST
+	local low = 0
+	-- SET NEW BLOCK HEALTH
+	local ht2 = 0
+
+	-- IF NUMBER IS BETWEEN MAX AND LOW THAN IT FOUND A ORETYPE
+	if Random > low and Random < low + coal then NewNumber = 1 end
+	low = low+coal if Random > low and Random < low + iron then NewNumber = 2 end
+	low = low+iron if Random > low and Random < low + nick then NewNumber = 3 end
+	low = low+nick if Random > low and Random < low + copp then NewNumber = 4 end
+	low = low+copp if Random > low and Random < low + silv then NewNumber = 5 end
+	low = low+silv if Random > low and Random < low + gold then NewNumber = 6 end
+	low = low+gold if Random > low and Random < low + diam then NewNumber = 7 end
+	low = low+diam if Random > low and Random < low + plat then NewNumber = 8 end
+	low = low+plat if Random > low and Random < low + uran then NewNumber = 9 end
+	low = low+uran if Random > low and Random < low + rhod then NewNumber = 10 end
+	low = low+rhod if Random > low and Random < low + obid then NewNumber = 11 end
+	low = low+obid if Random > low and Random < low + krun then NewNumber = 12 end
+	low = low+krun if Random > low and Random < low + crib then NewNumber = 13 end
+	low = low+crib if Random > low and Random < low + sili then NewNumber = 14 end
+	low = low+sili if Random > low and Random < low + icee then NewNumber = 15 end		
+	-- SET DATA
+	oretype = info["p"..NewNumber].n ht2 = info["p"..NewNumber].h
+	for B = 1, 6 do block["ore"..B].Material = info["p"..NewNumber].m block["ore"..B].Color = info["p"..NewNumber].c end
+	block:SetAttribute("ht",ht2)
+	block:SetAttribute("htd",ht2)	
+	block:SetAttribute("ore",oretype)
+end
+
+-- LOAD STARTING ORES
+for _, Part in pairs(Blocks:GetChildren()) do
+
+	-- LOAD DEFAULT ORE
+	CreateNewOre(Part)
+
+	-- ON TOUCHED A ORE
+	Part.Touched:Connect(function(hit)
+
+		-- IF STATMENTS
+		local char = hit.Parent:findFirstChild("Humanoid") if char~=nil then
+			local player = game.Players:findFirstChild(char.Parent.Name) if player~=nil then
+				local stats = player:findFirstChild("stats") if stats~=nil then
+
+					-- GET DATA
+					local block = Part
+					local oretype = block:GetAttribute("ore")
+					local ore = player.stats[oretype]
+					local Pickaxe = player.Character:FindFirstChild("Pickaxe")
+					-- IF THEY ARE HOLDING A PICKAXE AND HAVE ENOUGH STORAGE
+					if Pickaxe and stats.TotalBackPackinput.Value < stats.BackPacksize.Value then
+
+						-- DEBOUNCE
+						local p = table.find(players, player.UserId)if p==nil and block:GetAttribute("ht") > 0 then
+							
+							table.insert(players, player.UserId)
+
+							-- GET ORE INFO	
+							local ht = block:GetAttribute("ht")
+							local htd = block:GetAttribute("htd")
+							-- HIT ORE
+							player.Character.Humanoid.WalkSpeed = 5
+							RE2:FireClient(player)
+							task.wait (0.6)
+							ht -= stats.HitPower.Value
+
+							-- IF BELOW OR EQUAL TO 0 THEN COLLECT
+							if ht<=0 then
+								-- HIDE ORE
+								block.CanTouch = false
+								block:SetAttribute("ht",ht)
+
+								-- SET PLAYER DATA
+								RE4:FireClient(player,block)
+								local amoun = (math.random(1,2))
+								ore.Value = ore.Value + amoun
+								-- ADD TO QUEST SYSTEM
+								player.savingnonboolstats.Blocks.Value	= player.savingnonboolstats.Blocks.Value +1
+								player.stats.Quest_Ore.Value = player.stats.Quest_Ore.Value + 1 
+								-- ADD TO BACKPACK USEAGE
+								stats.TotalBackPackinput.Value = stats.TotalBackPackinput.Value + (RS.item_storage_amount[oretype].Value*amoun)
+								RE3:FireClient(player,oretype,amoun)
+
+								-- PLAYER SPEED
+								player.Character.Humanoid.WalkSpeed = 10
+								task.wait (0.2)
+								player.Character.Humanoid.WalkSpeed = 16 + stats.speed.Value
+								task.wait(0.2)
+								-- REMOVE PLAYER FROM DEBOUNCE SYSTEM
+								table.remove(players, table.find(players, player.UserId))	
+								block.Transparency = 1
+								block.CanCollide = false
+								for count = 1, 6 do block["ore"..count].Transparency = 1 end
+
+								-- WAIT TO RESPAWN ORE
+								task.wait(math.random(5,10)*8+150)
+								-- REQUEST TO CHANGE ORE
+								CreateNewOre(block)
+
+								-- UNHIDE ORE
+								task.wait (1)
+								block.Transparency = 0
+								block.CanCollide = true
+								block.CanTouch = true
+								for count = 1, 6 do block["ore"..count].Transparency = 0 end
+
+							else
+								-- DOES NOT COLLECT
+								block:SetAttribute("ht",ht)
+								RE4:FireClient(player,block)
+								-- PLAYER SPEED
+								player.Character.Humanoid.WalkSpeed = 10
+								task.wait (0.2)
+								player.Character.Humanoid.WalkSpeed = 16 + stats.speed.Value
+								task.wait(0.2)
+
+								-- REMOVES PLAYER FROM DEBOUNCE
+								table.remove(players, table.find(players, player.UserId))							
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+end
