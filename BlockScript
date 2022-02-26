@@ -65,20 +65,20 @@ local function CreateNewOre(block)
 
 	-- IF NUMBER IS BETWEEN MAX AND LOW THAN IT FOUND A ORETYPE
 	if Random > low and Random < low + coal then NewNumber = 1 end
-	low = low+coal if Random > low and Random < low + iron then NewNumber = 2 end
-	low = low+iron if Random > low and Random < low + nick then NewNumber = 3 end
-	low = low+nick if Random > low and Random < low + copp then NewNumber = 4 end
-	low = low+copp if Random > low and Random < low + silv then NewNumber = 5 end
-	low = low+silv if Random > low and Random < low + gold then NewNumber = 6 end
-	low = low+gold if Random > low and Random < low + diam then NewNumber = 7 end
-	low = low+diam if Random > low and Random < low + plat then NewNumber = 8 end
-	low = low+plat if Random > low and Random < low + uran then NewNumber = 9 end
-	low = low+uran if Random > low and Random < low + rhod then NewNumber = 10 end
-	low = low+rhod if Random > low and Random < low + obid then NewNumber = 11 end
-	low = low+obid if Random > low and Random < low + krun then NewNumber = 12 end
-	low = low+krun if Random > low and Random < low + crib then NewNumber = 13 end
-	low = low+crib if Random > low and Random < low + sili then NewNumber = 14 end
-	low = low+sili if Random > low and Random < low + icee then NewNumber = 15 end		
+	low += coal if Random > low and Random < low + iron then NewNumber = 2 end
+	low += iron if Random > low and Random < low + nick then NewNumber = 3 end
+	low += nick if Random > low and Random < low + copp then NewNumber = 4 end
+	low += copp if Random > low and Random < low + silv then NewNumber = 5 end
+	low += silv if Random > low and Random < low + gold then NewNumber = 6 end
+	low += gold if Random > low and Random < low + diam then NewNumber = 7 end
+	low += diam if Random > low and Random < low + plat then NewNumber = 8 end
+	low += plat if Random > low and Random < low + uran then NewNumber = 9 end
+	low += uran if Random > low and Random < low + rhod then NewNumber = 10 end
+	low += rhod if Random > low and Random < low + obid then NewNumber = 11 end
+	low += obid if Random > low and Random < low + krun then NewNumber = 12 end
+	low += krun if Random > low and Random < low + crib then NewNumber = 13 end
+	low += crib if Random > low and Random < low + sili then NewNumber = 14 end
+	low += sili if Random > low and Random < low + icee then NewNumber = 15 end				
 	-- SET DATA
 	oretype = info["p"..NewNumber].n ht2 = info["p"..NewNumber].h
 	for B = 1, 6 do block["ore"..B].Material = info["p"..NewNumber].m block["ore"..B].Color = info["p"..NewNumber].c end
