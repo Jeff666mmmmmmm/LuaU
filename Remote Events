@@ -1,0 +1,479 @@
+-- REMOTE EVENT SCRIPT
+
+local DataStore = game:GetService("DataStoreService")
+local MPS = game:GetService("MarketplaceService")
+local RS = game:GetService("ReplicatedStorage")
+
+local RE = RS:WaitForChild("Event_collectore")
+local RE2 = RS:WaitForChild("Event_die")
+local RE3 = RS:WaitForChild("Event_buypass")
+
+local RSP = RS.pickfolder
+local RSB = RS.backfolder
+local RSS = RS.pickskins
+local RSM = RS.pickmodel
+local RST = RS.effects
+local RSA = RS.audio
+
+-- IS AUDIO ID VALID
+local function IsValidAudio(AudioId)
+	if typeof(AudioId) == "number" then
+		
+		local Success, AssetInfo = pcall(game.MarketplaceService.GetProductInfo, game.MarketplaceService, AudioId)
+		-- IF AUDIO EXISTS RETURN TRUE OR FALSE
+		if Success and AssetInfo.AssetTypeId == 3 then
+			return true
+		else
+			return false
+		end
+		
+		-- NOT A NUMBER
+	else
+		return false
+	end
+	
+end
+
+-- LOAD PICKAXE
+local function loadpickaxe(player, info)
+	local s = player.savingstats
+	local b = player.savingnonboolstats
+	-- DESTORY OLD PICKAXE
+	if player.Backpack:FindFirstChild("Pickaxe") then
+		player.Backpack.Pickaxe:Destroy()
+	end
+	if player.Character:FindFirstChild("Pickaxe") then
+		player.Character.Pickaxe:Destroy() 
+	end
+	
+	-- CREATE PICKAXE
+	local pnew = RS.pickmodel["model"..b.pickaxemodel.Value].Pickaxe:Clone()
+	pnew.Parent = player.Backpack
+	local c = RS.pickmodel.Animations:Clone()
+	c.Parent = pnew
+	
+	-- LOAD SKINS
+	local m = "" if info == "new" then
+		m = RS.pickskins["skin"..b.PickaxeSkin.Value]
+	else m = RS.pickskins["skin"..RS.pickfolder["pick"..b.pickaxenumber.Value]:GetAttribute("skin")]
+	end
+	
+	pnew.Handle.Color = m.Handle.Color pnew.Handle.Material = m.Handle.Material
+	local p = pnew.Union
+	
+	p.Base.Color = m.Base.Color
+	p.Base.Material = m.Base.Material
+	
+	p.Top.Color = m.Top.Color
+	p.Top.Material = m.Top.Material
+	
+	p.FrontWedge.Color = m.FrontWedge.Color
+	p.FrontWedge.Material = m.FrontWedge.Material
+	
+	p.BackWedge.Color = m.BackWedge.Color
+	p.BackWedge.Material = m.BackWedge.Material
+	
+	-- LOAD MUSIC SET IN GAME
+	if b.music.Value ~= 0 and b.music.Value ~= -1 then 
+		local n = RS.audio["music"..b.music.Value]:Clone()
+		n.Parent = pnew.Handle 
+		local c = game.ServerStorage.AudioScript:Clone()
+		c.Parent=n 
+	end
+	-- LOAD CUSTOME MUSIC
+	if b.music.Value == 0 and player.stats.vip_pass.Value == true then 
+		local n = RS.audio.music1:Clone()
+		n.Parent = pnew.Handle
+		local c = game.ServerStorage.AudioScript:Clone()
+		c.Parent = n
+		n.SoundId =  ("rbxassetid://"..player.stats.AudioID.Value)
+	end
+	-- LOAD EFFECT SET IN GAME
+	if b.effect.Value ~= 0 then 
+		local n = RS.effects["trail"..b.effect.Value]:Clone()
+		n.Parent = pnew.Handle
+	end
+	
+	player.stats.HitPower.Value = RS.pickfolder["pick"..b.pickaxenumber.Value]:GetAttribute("storage")	
+	
+end
+
+-- BUY ITEM REQUEST
+RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
+	local Cash = player:WaitForChild("leaderstats", 10).Money or 0
+	itemid = itemid or 1
+
+	-- BACKPACK
+	if request == "BackPack" then
+		if RSB:FindFirstChild("back"..itemid) then
+			if Cash.Value >= RSB["back"..itemid]:GetAttribute("price") and player.savingstats["back"..itemid].Value == false then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("back"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["back"..itemid].Value = true
+				Cash.Value -= RSB["back"..itemid]:GetAttribute("price")
+				player.stats.BackPacksize.Value = RSB["back"..itemid]:GetAttribute("storage")
+				player.savingnonboolstats.backpacknumber.Value = itemid
+				
+				-- DESTORY OLD BACKPACK
+				if player.Character:FindFirstChild("PlayerBackPack") 
+				then player.Character.PlayerBackPack:Destroy()
+				end
+				
+				-- CREATE NEW BACKPACK
+				local clone = RS.backfolder["back"..itemid]:Clone()
+				clone.Parent = player.Character
+				clone.Name = "PlayerBackPack"
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RSB["back"..itemid]:GetAttribute("name"), "1")
+			end 
+		end	
+		
+		-- PICKAXE
+	elseif request == "Pickaxe" then 
+		if RSP:FindFirstChild("pick"..itemid) then
+			if Cash.Value >= RSP["pick"..itemid]:GetAttribute("price") and player.savingstats["pick"..itemid].Value == false then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("pick"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["pick"..itemid].Value = true
+				Cash.Value = Cash.Value - RSP["pick"..itemid]:GetAttribute("price")
+				player.savingnonboolstats.pickaxenumber.Value = itemid
+				player.savingnonboolstats.PickaxeSkin.Value = RS.pickfolder["pick"..itemid]:GetAttribute("skin")
+				player.savingstats["skin"..RS.pickfolder["pick"..itemid]:GetAttribute("skin")].Value = true
+				
+				-- NEW PICKAXE
+				pcall(loadpickaxe, player, "new")
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RSP["pick"..itemid]:GetAttribute("name"), "1")
+			end 
+		end
+		
+		-- SKIN
+	elseif request == "skin" then
+		if RSS:FindFirstChild("skin"..itemid) then
+			if Cash.Value >= RSS["skin"..itemid]:GetAttribute("price") and player.savingstats["skin"..itemid].Value == false and RSS["skin"..itemid]:GetAttribute("buy") == true then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("skin"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["skin"..itemid].Value = true
+				Cash.Value = Cash.Value - RSS["skin"..itemid]:GetAttribute("price")
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RSS["skin"..itemid]:GetAttribute("name").." Skin", "1")
+			end 
+		end
+		
+		-- MODEL
+	elseif request == "model" then
+		if RSM:FindFirstChild("model"..itemid) then
+			if Cash.Value >= RSM["model"..itemid]:GetAttribute("price") and player.savingstats["model"..itemid].Value == false and RSM["model"..itemid]:GetAttribute("buy") == true then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("model"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["model"..itemid].Value = true
+				Cash.Value = Cash.Value - RSM["model"..itemid]:GetAttribute("price")
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RSM["model"..itemid]:GetAttribute("name").." Frame", "1")
+			end 
+		end
+		
+		-- TRAIL
+	elseif request == "trail" then
+		if RST:FindFirstChild("trail"..itemid) then
+			if Cash.Value >= RST["trail"..itemid]:GetAttribute("price") and player.savingstats["effect"..itemid].Value == false and RST["trail"..itemid]:GetAttribute("buy") == true then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("trail"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["effect"..itemid].Value = true
+				Cash.Value = Cash.Value - RST["trail"..itemid]:GetAttribute("price")
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RST["trail"..itemid]:GetAttribute("name").." Trail", "1")
+			end 
+		end
+		
+		-- MUSIC
+	elseif request == "music" then
+		if RSA:FindFirstChild("music"..itemid) then
+			if Cash.Value >= RSA["music"..itemid]:GetAttribute("price") and player.savingstats["music"..itemid].Value == false and RSA["music"..itemid]:GetAttribute("buy") == true then
+				
+				-- DATA STORAGE
+				local d = DataStore:GetDataStore("music"..itemid)
+				d:SetAsync(player.UserId, true)
+				
+				-- UPDATE IN GAME STATS
+				player.savingstats["music"..itemid].Value = true
+				Cash.Value = Cash.Value - RSA["music"..itemid]:GetAttribute("price")
+				
+				-- NOTIFICATION
+				RE:FireClient(player, RSA["music"..itemid]:GetAttribute("name").." Music", "1")
+			end
+		end
+		
+	end 
+	
+	
+end)
+
+-- UPDATE BACKPACK TEXT
+RS.Event_updatebackpacknumber.OnServerEvent:Connect(function(player)
+	if player.Character:FindFirstChild("PlayerBackPack") then
+		
+		-- CHANGE TEXT
+		player.Character.PlayerBackPack.Text.gui.TextLabel.Text = ((player.stats.TotalBackPackinput.Value.."/"..player.stats.BackPacksize.Value.." Storage"))
+	end
+end)
+
+-- EQUIPT BACKPACK
+RS.Event_updatebackpack.OnServerEvent:Connect(function(player, number)
+	number = number or 1
+	
+	-- IF OWNED EQUIPT
+	if player.savingstats:FindFirstChild("back"..number).Value == true then
+		
+		-- DESTROY OLD BACKPACK
+		if player.Character:FindFirstChild("PlayerBackPack") then player.Character.PlayerBackPack:Destroy() end
+
+		player.savingnonboolstats.backpacknumber.Value = number
+		
+		-- LOAD NEW BACKPACK
+		local clone = RS.backfolder["back"..number]:Clone()
+		clone.Parent = player.Character
+		clone.Name = "PlayerBackPack"
+		if player.savingstats["back"..number].Value == true then
+			player.stats.BackPacksize.Value = RSB["back"..number]:GetAttribute("storage")
+		end
+	end
+	
+end)
+
+-- REQUEST TO LOAD A NEW PICKAXE
+RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin, audio, model, effect, AudioID)
+	number = number or 0
+	skin = skin  or 0
+	audio = audio or 0
+	model = model or 0
+	effect = effect or 0
+	
+	-- LOADS A CHOSEN PICKAXE
+	if load == "equipt" then
+		if player.savingstats:FindFirstChild("pick"..number).Value == true then
+			
+			-- UPDATE IN GAME STATS
+			player.savingnonboolstats.pickaxenumber.Value = number
+			player.savingnonboolstats.PickaxeSkin.Value = RS.pickfolder["pick"..number]:GetAttribute("skin")
+			player.savingstats["skin"..RS.pickfolder["pick"..number]:GetAttribute("skin")].Value = true
+			
+			-- LOAD PICKAXE
+			pcall(loadpickaxe, player, "orignal")
+		end
+		
+		-- REQUEST FOR CUSTOME DATA
+	elseif load == "new" then 
+		local bools = player.savingstats
+		
+		-- CUSTOME SKIN
+		if skin ~= 0 then
+			local p = bools:FindFirstChild("skin"..skin) if p then if p.Value == true then
+					player.savingnonboolstats.PickaxeSkin.Value = skin end
+			end
+		end
+
+		-- AUDIO CHOSEN
+		if audio ~= -1 then
+			local p = bools:FindFirstChild("music"..audio) if p then if p.Value == true then 
+					player.savingnonboolstats.music.Value = audio end
+			end 
+		end
+		
+		-- CUSTOME MUSIC
+		if audio == 0 then 
+			-- CHECK TO MAKE SURE AUDIO ID IS VALID ID
+			if (IsValidAudio(AudioID) or false) == true then
+				
+				player.savingnonboolstats.music.Value = 0 player.stats.AudioID.Value = (AudioID or 0)
+				local d = DataStore:GetDataStore("MusicID")
+				d:SetAsync(player.UserId, player.stats.AudioID.Value)
+			else
+				
+				-- ERROR NOTIFICATION
+				RE:FireClient(player, "Invalid Audio ID", nil, "Error")
+			end
+		end
+		
+		-- NO AUDIO
+		if audio == -1 then
+			player.savingnonboolstats.music.Value = -1 
+		end 
+		
+		-- CUSTOME MODEL
+		if model ~= 0 then
+			local p = bools:FindFirstChild("model"..model)
+			if p then 
+				if p.Value == true then
+					player.savingnonboolstats.pickaxemodel.Value = model
+				end 
+			end 
+		end
+		
+		-- CUSTOME EFFECT
+		if effect ~= 0 then
+			local p = bools:FindFirstChild("effect"..effect) 
+			if p then
+				if p.Value == true then
+					player.savingnonboolstats.effect.Value = effect 
+				end 
+			end 
+		else
+			player.savingnonboolstats.effect.Value = 0
+		end
+		
+		-- NEW PICKAXE
+		pcall(loadpickaxe, player, "new") 
+	end
+	
+end)
+
+-- TELEPORT PLAYER REQUEST
+RS.Event_Teleport.OnServerEvent:Connect(function(player, location) 
+	-- GET HEIGHT
+	local num = player.Character:FindFirstChild("HumanoidRootPart").Position.Y or 0
+	
+	-- REQUEST TO SURFACE
+	if location == "Surface" then
+		
+		-- MAX HEIGHT
+		if num > 0 then
+			num = 0 
+		end
+		-- CORRECT COST
+		if num < 0 then 
+			num = math.abs(num)
+			num = num/2 
+			num = math.round(num)
+		end
+		-- CHEEPEST COST
+		if num < 15 then
+			num = 15 
+		end
+		-- VIP PASS DISCOUNT
+		if player.stats.vip_pass.Value == true then 
+			num = num-math.round(num*.05)
+		end
+		
+		-- UPDATE IN GAME STATS
+		if num <= player.leaderstats.Money.Value then
+			player.leaderstats.Money.Value -= num
+			player.Character:MoveTo(game.Workspace.Teleport_part.Position)
+		end
+		
+	end
+
+end)
+
+-- BUY GAMEPASS
+RE3.OnServerEvent:Connect(function(player, id, info)
+	-- CHECK TO ENSURE REQUEST WAS VIP PASS
+	if info == "VIP" then
+		MPS:PromptGamePassPurchase(player, id)
+	end 
+	
+end)
+
+-- MANAGE RECEIPT
+game:GetService("MarketplaceService").ProcessReceipt = function(ReceiptInfo) 
+	local Purchasing_Player = game.Players:GetPlayerByUserId(ReceiptInfo.PlayerId)
+	
+	-- PLAYER RECEVES CASH ONE
+	if ReceiptInfo.ProductId == 1211101864 then
+		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then 
+			Purchasing_Player.leaderstats.Money.Value += 550
+			
+			-- RECIVE NOTIFICATION
+			RE:FireClient(Purchasing_Player, "Money", "550")
+		end 
+	end
+	
+	-- PLAYER RECEVES CASH TWO
+	if ReceiptInfo.ProductId == 1211101865 then
+		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then
+			Purchasing_Player.leaderstats.Money.Value += 2600
+			
+			-- RECIVE NOTIFICATION
+			RE:FireClient(Purchasing_Player, "Money", "2600")
+		end
+	end	
+	
+	-- TELLS ROBLOX THIS PURCHASED WORKED
+	return Enum.ProductPurchaseDecision.PurchaseGranted 
+	
+end
+
+-- ON PLAYER DIED
+game:GetService('Players').PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function(character)
+		character:WaitForChild("Humanoid").Died:Connect(function()		
+			
+			-- RUNS WHEN CHARACTER DIED
+			RE2:FireClient(player)
+			local clone = game.ServerStorage.Chest:Clone()
+			
+			if character:FindFirstChild("HumanoidRootPart") then
+				clone.Parent = game.Workspace		
+				clone:MoveTo(character.HumanoidRootPart.Position)
+				
+				local m = player.leaderstats.Money.Value
+				m = math.round(m/10)
+				if player.leaderstats.Money.Value == m or player.leaderstats.Money.Value > m then
+					player.leaderstats.Money.Value -= m end
+				
+				clone.info.player.Value = player.Name
+				clone.info.money.Value = math.round(m/2)
+				
+				-- DESTROYS PICKAXE
+				if player.Backpack:FindFirstChild("Pickaxe") then 
+					player.Backpack.Pickaxe:Destroy() 
+				end
+				if character:FindFirstChild("Pickaxe") then
+					character.Pickaxe:Destroy()
+				end
+				
+				-- DESTORYS BACKPACK
+				if character:FindFirstChild("PlayerBackPack") then
+					character.PlayerBackPack:Destroy()
+				end
+				
+				task.wait(6)
+				
+				-- LOAD NEW PICKAXE
+				pcall(loadpickaxe, player, "orignal")
+				
+				-- LOAD NEW BACKPACK
+				local number = player.savingnonboolstats.backpacknumber.Value
+				local clone = RS.backfolder["back"..number]:Clone()
+				clone.Parent = character
+				clone.Name = "PlayerBackPack"
+			end
+		end)
+	end)
+	
+end)
