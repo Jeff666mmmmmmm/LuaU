@@ -19,7 +19,7 @@ local RSA = RS.audio
 local function IsValidAudio(AudioId)
 	if typeof(AudioId) == "number" then
 		
-		local Success, AssetInfo = pcall(game.MarketplaceService.GetProductInfo, game.MarketplaceService, AudioId)
+		local Success, AssetInfo = pcall(MPS.GetProductInfo, MPS, AudioId)
 		-- IF AUDIO EXISTS RETURN TRUE OR FALSE
 		if Success and AssetInfo.AssetTypeId == 3 then
 			return true
@@ -38,12 +38,13 @@ end
 local function loadpickaxe(player, info)
 	local s = player.savingstats
 	local b = player.savingnonboolstats
+	
 	-- DESTORY OLD PICKAXE
 	if player.Backpack:FindFirstChild("Pickaxe") then
 		player.Backpack.Pickaxe:Destroy()
 	end
 	if player.Character:FindFirstChild("Pickaxe") then
-		player.Character.Pickaxe:Destroy() 
+		player.Character.Pickaxe:Destroy()
 	end
 	
 	-- CREATE PICKAXE
@@ -74,22 +75,24 @@ local function loadpickaxe(player, info)
 	p.BackWedge.Material = m.BackWedge.Material
 	
 	-- LOAD MUSIC SET IN GAME
-	if b.music.Value ~= 0 and b.music.Value ~= -1 then 
+	if b.music.Value ~= 0 and b.music.Value ~= -1 then
 		local n = RS.audio["music"..b.music.Value]:Clone()
-		n.Parent = pnew.Handle 
+		n.Parent = pnew.Handle
 		local c = game.ServerStorage.AudioScript:Clone()
-		c.Parent=n 
+		c.Parent=n
 	end
+	
 	-- LOAD CUSTOME MUSIC
-	if b.music.Value == 0 and player.stats.vip_pass.Value == true then 
+	if b.music.Value == 0 and player.stats.vip_pass.Value == true then
 		local n = RS.audio.music1:Clone()
 		n.Parent = pnew.Handle
 		local c = game.ServerStorage.AudioScript:Clone()
 		c.Parent = n
-		n.SoundId =  ("rbxassetid://"..player.stats.AudioID.Value)
+		n.SoundId = ("rbxassetid://"..player.stats.AudioID.Value)
 	end
+	
 	-- LOAD EFFECT SET IN GAME
-	if b.effect.Value ~= 0 then 
+	if b.effect.Value ~= 0 then
 		local n = RS.effects["trail"..b.effect.Value]:Clone()
 		n.Parent = pnew.Handle
 	end
@@ -119,7 +122,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				player.savingnonboolstats.backpacknumber.Value = itemid
 				
 				-- DESTORY OLD BACKPACK
-				if player.Character:FindFirstChild("PlayerBackPack") 
+				if player.Character:FindFirstChild("PlayerBackPack")
 				then player.Character.PlayerBackPack:Destroy()
 				end
 				
@@ -144,7 +147,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				
 				-- UPDATE IN GAME STATS
 				player.savingstats["pick"..itemid].Value = true
-				Cash.Value = Cash.Value - RSP["pick"..itemid]:GetAttribute("price")
+				Cash.Value -= RSP["pick"..itemid]:GetAttribute("price")
 				player.savingnonboolstats.pickaxenumber.Value = itemid
 				player.savingnonboolstats.PickaxeSkin.Value = RS.pickfolder["pick"..itemid]:GetAttribute("skin")
 				player.savingstats["skin"..RS.pickfolder["pick"..itemid]:GetAttribute("skin")].Value = true
@@ -168,7 +171,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				
 				-- UPDATE IN GAME STATS
 				player.savingstats["skin"..itemid].Value = true
-				Cash.Value = Cash.Value - RSS["skin"..itemid]:GetAttribute("price")
+				Cash.Value -= RSS["skin"..itemid]:GetAttribute("price")
 				
 				-- NOTIFICATION
 				RE:FireClient(player, RSS["skin"..itemid]:GetAttribute("name").." Skin", "1")
@@ -186,7 +189,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				
 				-- UPDATE IN GAME STATS
 				player.savingstats["model"..itemid].Value = true
-				Cash.Value = Cash.Value - RSM["model"..itemid]:GetAttribute("price")
+				Cash.Value -= RSM["model"..itemid]:GetAttribute("price")
 				
 				-- NOTIFICATION
 				RE:FireClient(player, RSM["model"..itemid]:GetAttribute("name").." Frame", "1")
@@ -204,7 +207,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				
 				-- UPDATE IN GAME STATS
 				player.savingstats["effect"..itemid].Value = true
-				Cash.Value = Cash.Value - RST["trail"..itemid]:GetAttribute("price")
+				Cash.Value -= RST["trail"..itemid]:GetAttribute("price")
 				
 				-- NOTIFICATION
 				RE:FireClient(player, RST["trail"..itemid]:GetAttribute("name").." Trail", "1")
@@ -222,7 +225,7 @@ RS.Event_Buyitem.OnServerEvent:Connect(function(player, request, itemid)
 				
 				-- UPDATE IN GAME STATS
 				player.savingstats["music"..itemid].Value = true
-				Cash.Value = Cash.Value - RSA["music"..itemid]:GetAttribute("price")
+				Cash.Value -= RSA["music"..itemid]:GetAttribute("price")
 				
 				-- NOTIFICATION
 				RE:FireClient(player, RSA["music"..itemid]:GetAttribute("name").." Music", "1")
@@ -269,7 +272,7 @@ end)
 -- REQUEST TO LOAD A NEW PICKAXE
 RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin, audio, model, effect, AudioID)
 	number = number or 0
-	skin = skin  or 0
+	skin = skin or 0
 	audio = audio or 0
 	model = model or 0
 	effect = effect or 0
@@ -288,7 +291,7 @@ RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin
 		end
 		
 		-- REQUEST FOR CUSTOME DATA
-	elseif load == "new" then 
+	elseif load == "new" then
 		local bools = player.savingstats
 		
 		-- CUSTOME SKIN
@@ -300,15 +303,15 @@ RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin
 
 		-- AUDIO CHOSEN
 		if audio ~= -1 then
-			local p = bools:FindFirstChild("music"..audio) if p then if p.Value == true then 
+			local p = bools:FindFirstChild("music"..audio) if p then if p.Value == true then
 					player.savingnonboolstats.music.Value = audio end
-			end 
+			end
 		end
 		
 		-- CUSTOME MUSIC
-		if audio == 0 then 
+		if audio == 0 then
 			-- CHECK TO MAKE SURE AUDIO ID IS VALID ID
-			if (IsValidAudio(AudioID) or false) == true then
+			if IsValidAudio(AudioID) == true then
 				
 				player.savingnonboolstats.music.Value = 0 player.stats.AudioID.Value = (AudioID or 0)
 				local d = DataStore:GetDataStore("MusicID")
@@ -322,7 +325,7 @@ RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin
 		
 		-- NO AUDIO
 		if audio == -1 then
-			player.savingnonboolstats.music.Value = -1 
+			player.savingnonboolstats.music.Value = -1
 		end 
 		
 		-- CUSTOME MODEL
@@ -330,6 +333,7 @@ RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin
 			local p = bools:FindFirstChild("model"..model)
 			if p then 
 				if p.Value == true then
+					
 					player.savingnonboolstats.pickaxemodel.Value = model
 				end 
 			end 
@@ -337,24 +341,26 @@ RS.Event_updatepickaxe.OnServerEvent:Connect(function(player, number, load, skin
 		
 		-- CUSTOME EFFECT
 		if effect ~= 0 then
-			local p = bools:FindFirstChild("effect"..effect) 
+			local p = bools:FindFirstChild("effect"..effect)
 			if p then
 				if p.Value == true then
-					player.savingnonboolstats.effect.Value = effect 
+					
+					player.savingnonboolstats.effect.Value = effect
 				end 
 			end 
 		else
+			
 			player.savingnonboolstats.effect.Value = 0
 		end
 		
 		-- NEW PICKAXE
-		pcall(loadpickaxe, player, "new") 
+		pcall(loadpickaxe, player, "new")
 	end
 	
 end)
 
 -- TELEPORT PLAYER REQUEST
-RS.Event_Teleport.OnServerEvent:Connect(function(player, location) 
+RS.Event_Teleport.OnServerEvent:Connect(function(player, location)
 	-- GET HEIGHT
 	local num = player.Character:FindFirstChild("HumanoidRootPart").Position.Y or 0
 	
@@ -366,18 +372,18 @@ RS.Event_Teleport.OnServerEvent:Connect(function(player, location)
 			num = 0 
 		end
 		-- CORRECT COST
-		if num < 0 then 
+		if num < 0 then
 			num = math.abs(num)
-			num = num/2 
+			num = num/2
 			num = math.round(num)
 		end
 		-- CHEEPEST COST
 		if num < 15 then
-			num = 15 
+			num = 15
 		end
 		-- VIP PASS DISCOUNT
-		if player.stats.vip_pass.Value == true then 
-			num = num-math.round(num*.05)
+		if player.stats.vip_pass.Value == true then
+			num -= math.round(num*.05)
 		end
 		
 		-- UPDATE IN GAME STATS
@@ -392,6 +398,7 @@ end)
 
 -- BUY GAMEPASS
 RE3.OnServerEvent:Connect(function(player, id, info)
+	
 	-- CHECK TO ENSURE REQUEST WAS VIP PASS
 	if info == "VIP" then
 		MPS:PromptGamePassPurchase(player, id)
@@ -400,12 +407,12 @@ RE3.OnServerEvent:Connect(function(player, id, info)
 end)
 
 -- MANAGE RECEIPT
-game:GetService("MarketplaceService").ProcessReceipt = function(ReceiptInfo) 
+game:GetService("MarketplaceService").ProcessReceipt = function(ReceiptInfo)
 	local Purchasing_Player = game.Players:GetPlayerByUserId(ReceiptInfo.PlayerId)
 	
 	-- PLAYER RECEVES CASH ONE
 	if ReceiptInfo.ProductId == 1211101864 then
-		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then 
+		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then
 			Purchasing_Player.leaderstats.Money.Value += 550
 			
 			-- RECIVE NOTIFICATION
@@ -424,7 +431,7 @@ game:GetService("MarketplaceService").ProcessReceipt = function(ReceiptInfo)
 	end	
 	
 	-- TELLS ROBLOX THIS PURCHASED WORKED
-	return Enum.ProductPurchaseDecision.PurchaseGranted 
+	return Enum.ProductPurchaseDecision.PurchaseGranted
 	
 end
 
@@ -450,7 +457,7 @@ game:GetService('Players').PlayerAdded:Connect(function(player)
 				clone.info.money.Value = math.round(m/2)
 				
 				-- DESTROYS PICKAXE
-				if player.Backpack:FindFirstChild("Pickaxe") then 
+				if player.Backpack:FindFirstChild("Pickaxe") then
 					player.Backpack.Pickaxe:Destroy() 
 				end
 				if character:FindFirstChild("Pickaxe") then
