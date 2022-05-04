@@ -120,7 +120,7 @@ for _, Part in pairs(Blocks:GetChildren()) do
 							-- HIT ORE
 							player.Character.Humanoid.WalkSpeed = 5
 							RE2:FireClient(player)
-							task.wait (0.6)
+							task.wait(0.6)
 							ht -= stats.HitPower.Value
 
 							-- IF BELOW OR EQUAL TO 0 THEN COLLECT
@@ -142,7 +142,7 @@ for _, Part in pairs(Blocks:GetChildren()) do
 
 								-- PLAYER SPEED
 								player.Character.Humanoid.WalkSpeed = 10
-								task.wait (0.2)
+								task.wait(0.2)
 								player.Character.Humanoid.WalkSpeed = 16 + stats.speed.Value
 								task.wait(0.2)
 								-- REMOVE PLAYER FROM DEBOUNCE SYSTEM
@@ -157,7 +157,6 @@ for _, Part in pairs(Blocks:GetChildren()) do
 								CreateNewOre(block)
 
 								-- UNHIDE ORE
-								task.wait (1)
 								block.Transparency = 0
 								block.CanCollide = true
 								block.CanTouch = true
@@ -169,7 +168,7 @@ for _, Part in pairs(Blocks:GetChildren()) do
 								RE4:FireClient(player,block)
 								-- PLAYER SPEED
 								player.Character.Humanoid.WalkSpeed = 10
-								task.wait (0.2)
+								task.wait(0.2)
 								player.Character.Humanoid.WalkSpeed = 16 + stats.speed.Value
 								task.wait(0.2)
 
