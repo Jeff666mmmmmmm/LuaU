@@ -1,2 +1,2 @@
-# RobloxProject
-Roblox "Mining Simulator" Programming
+# LuauProject
+Roblox Lua programming
