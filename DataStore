@@ -1,0 +1,188 @@
+local RS = game.ReplicatedStorage
+local BadgeService = game:GetService("BadgeService")
+local joinbadgeId = (2124888302)
+local DataStore = game:GetService("DataStoreService")
+
+-- AWARD JOIN BADGE
+local function awardBadge(player)
+	-- Get badge information
+	local success, badgeInfo = pcall(function()
+		return BadgeService:GetBadgeInfoAsync(joinbadgeId)
+	end)
+	if success then
+		-- Confirm that badge can be awarded
+		if badgeInfo.IsEnabled then
+			-- Award badge
+			pcall(function()
+				BadgeService:AwardBadge(player.UserId, joinbadgeId)
+			end)
+		end
+	end
+end
+
+-- LOAD OBJECTS
+local function loaditems(player)
+	game.Workspace:WaitForChild(player.Name)
+	local s = player.savingstats
+	local b = player.savingnonboolstats
+	
+	-- EFFECT
+	if b.effect.Value ~= 0 then 
+		if s["effect"..b.effect.Value].Value == false then 
+			b.effect.Value = 0 end
+	end
+	
+	-- MUSIC
+	if b.music.Value ~= 0 and b.music.Value ~= -1 then 
+		if s["music"..b.music.Value].Value == false then
+			b.music.Value = -1 
+		end 
+	end
+	
+	-- SKIN
+	if s["skin"..b.PickaxeSkin.Value].Value == false then
+		b.PickaxeSkin.Value = 1 
+	end
+	
+	-- PICK NUMBER
+	if s["pick"..b.pickaxenumber.Value].Value == false then
+		b.pickaxenumber.Value = 1 
+	end
+	
+	-- BACKPACK
+	if s["back"..b.backpacknumber.Value].Value == false then 
+		b.backpacknumber.Value = 1
+	end
+	
+	local c = RS.backfolder["back"..b.backpacknumber.Value]:Clone()
+	c.Parent = game.Workspace[player.Name]
+	c.Name = "PlayerBackPack"
+	player.stats.BackPacksize.Value = RS.backfolder["back"..b.backpacknumber.Value]:GetAttribute("storage")
+	
+	-- CREATE PICKAXE
+	local pnew = RS.pickmodel["model"..b.pickaxemodel.Value].Pickaxe:Clone()
+	pnew.Parent = player.Backpack
+	local c = RS.pickmodel.Animations:Clone()
+	c.Parent = pnew
+	local m = RS.pickskins["skin"..b.PickaxeSkin.Value]
+	pnew.Handle.Color = m.Handle.Color pnew.Handle.Material = m.Handle.Material
+	local p = pnew.Union
+	
+	-- SET COLOR AND MATERIAL
+	p.Base.Color = m.Base.Color 
+	p.Base.Material = m.Base.Material
+	
+	p.Top.Color = m.Top.Color
+	p.Top.Material = m.Top.Material
+	
+	p.FrontWedge.Color = m.FrontWedge.Color
+	p.FrontWedge.Material = m.FrontWedge.Material
+	
+	p.BackWedge.Color = m.BackWedge.Color 
+	p.BackWedge.Material = m.BackWedge.Material
+	
+	if b.music.Value ~= 0 and b.music.Value ~= -1 then 
+		local n = RS.audio["music"..b.music.Value]:Clone()
+		n.Parent = pnew.Handle 
+		local c = game.ServerStorage.AudioScript:Clone() 
+		c.Parent=n 
+	end
+	
+	if b.music.Value == 0 then
+		local d = DataStore:GetDataStore("MusicID")
+		local id = d:GetAsync(player.UserId) or 0
+		player.stats.AudioID.Value = id
+		local n = RS.audio.music1:Clone()
+		n.Parent = pnew.Handle 
+		local c = game.ServerStorage.AudioScript:Clone()
+		c.Parent = n 
+		n.SoundId = ("rbxassetid://"..id) 
+	end
+	
+	if b.effect.Value ~= 0 then 
+		local n = RS.effects["trail"..b.effect.Value]:Clone()
+		n.Parent = pnew.Handle
+	end
+	
+	player.stats.HitPower.Value = RS.pickfolder["pick"..b.pickaxenumber.Value]:GetAttribute("storage")
+	
+	if game:GetService("MarketplaceService"):UserOwnsGamePassAsync(player.UserId, 23438610) then
+		player.stats.vip_pass.Value = true
+		player.stats.speed.Value += 2
+		player.Character.Humanoid.WalkSpeed += player.stats.speed.Value
+	end
+	
+end
+
+-- LOAD PLAYER DATA WHEN JOIN
+game.Players.PlayerAdded:connect(function(player)
+
+	local c = game.ServerStorage.stats:Clone()
+	c.Parent = player		
+	
+	-- MONEY
+	local Leader = Instance.new("Folder",player)
+    Leader.Name = "leaderstats"
+   	local D = DataStore:GetDataStore("Money")
+   	local V = Instance.new("NumberValue", Leader)
+   	V.Name = "Money"
+   	V.Value = D:GetAsync(player.UserId) or 15
+
+	
+	local folder = Instance.new("Folder",player) 
+	folder.Name = "savingstats"
+	
+	for i,v in pairs(game.ServerStorage.savingstats:GetChildren()) do 
+		local d = DataStore:GetDataStore(v.Name)
+		local x = Instance.new("BoolValue",folder)
+		x.Name = v.Name
+		x.Value = d:GetAsync(player.UserId) or v.Value
+	end
+
+	local folder2 = Instance.new("Folder",player) 
+	folder2.Name = "savingnonboolstats"
+	
+	for i,v in pairs(RS.savingnonboolstats:GetChildren()) do
+		local d = DataStore:GetDataStore(v.Name)
+		local x = Instance.new("NumberValue",folder2)
+		x.Name = v.Name
+		x.Value = d:GetAsync(player.UserId) or v.Value
+	end
+
+	-- LOAD NEW PICKAXE
+	pcall(loaditems,player)
+
+	-- AWARD JOIN BADGE
+	--awardBadge(player)
+
+end)
+
+-- SAVE WHEN PLAYER LEAVES
+game.Players.PlayerRemoving:Connect(function(player)
+	-- SAVE MONEY
+	local d = DataStore:GetDataStore("Money")
+	d:SetAsync(player.UserId, player.leaderstats.Money.Value)
+
+	-- SAVE CURRENT DATA
+	for i,v in pairs(RS.savingnonboolstats:GetChildren()) do 
+		local d = DataStore:GetDataStore(v.Name)
+		d:SetAsync(player.UserId, player.savingnonboolstats[v.Name].Value)
+	end
+
+end)
+
+-- AUTO SAVING 
+while true do task.wait(100)
+	-- GET ALL PLAYERS
+	for i, player in pairs(game.Players:GetChildren()) do 
+		-- SAVE MONEY
+		local d = DataStore:GetDataStore("Money")
+		d:SetAsync(player.UserId, player.leaderstats.Money.Value)
+		-- SAVE CURRENT DATA
+		for i,v in pairs(RS.savingnonboolstats:GetChildren()) do 
+		local d = DataStore:GetDataStore(v.Name)
+		d:SetAsync(player.UserId, player.savingnonboolstats[v.Name].Value)
+		end
+		
+	end
+end
