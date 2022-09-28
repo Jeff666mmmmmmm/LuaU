@@ -1,0 +1,311 @@
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local Controls = require(LocalPlayer.PlayerScripts.PlayerModule):GetControls()
+local UserInput = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local RS = game:GetService("ReplicatedStorage").remoteEvents
+local SendEvent = RS:WaitForChild("remoteEventSendToServer")
+local ReciveEvent = RS:WaitForChild("remoteEventSendToClient")
+
+local Frame = LocalPlayer.PlayerGui.ScreenGui.Frame
+local Mouse = LocalPlayer:GetMouse()
+local turret = Frame:WaitForChild("playerFrame").Turret
+LocalPlayer.PlayerGui:WaitForChild("refrenceObjects")
+
+
+local playerPositionX = 20
+local playerPositionY = 20
+local playerPosition = Vector2.new(playerPositionX, playerPositionY)
+local speed = 12
+local moveingTo ={W = false,  S = false, A = false, D = false}
+
+local screenObjects = {
+	
+	
+	
+	
+}
+
+-- Stop Physical Player Movement
+Controls:Disable()
+
+local function moveObject(object, goal, length)
+	object:TweenPosition(
+		goal,           -- Final position the tween should reach
+		Enum.EasingDirection.In, -- Direction of the easing
+		Enum.EasingStyle.Linear,   -- Kind of easing to apply
+		length,                       -- Duration of the tween in seconds
+		true                    -- Whether in-progress tweens are interrupted
+	)
+	
+end
+
+local function moveTurret(object, goal, rotationStart)
+	
+	if goal > rotationStart then
+		for count = rotationStart, goal, 2 do task.wait(0.03)
+			object.Rotation = object.Rotation + 1
+		end
+	else
+		for count = rotationStart, goal, -2 do task.wait(0.03)
+			object.Rotation = object.Rotation - 1
+		end
+	end
+
+end
+
+local function removeObject(oType, id)
+	if oType == "ball" then
+
+		local find = Frame.gameFrame:FindFirstChild(id) 
+		if find then 
+			
+			find:TweenSize(
+				UDim2.new(0, 0, 0, 0),  -- endSize (required)
+				Enum.EasingDirection.In,    -- easingDirection (default Out)
+				Enum.EasingStyle.Linear,      -- easingStyle (default Quad)
+				0.3                         -- time (default: 1)
+			)
+			task.wait(0.3)
+			find:Destroy()
+		end
+	end
+
+	if oType == "player" then
+		
+		local find = Frame.gameFrame:FindFirstChild(id) 
+		if find then 
+			
+			find:TweenSize(
+				UDim2.new(0, 0, 0, 0),  -- endSize (required)
+				Enum.EasingDirection.In,    -- easingDirection (default Out)
+				Enum.EasingStyle.Linear,      -- easingStyle (default Quad)
+				0.3                         -- time (default: 1)
+			)
+			task.wait(0.3)
+			find:Destroy()
+		end
+
+	end
+
+
+end
+
+local function createNewObject(oType, location, movingTo, speed, rotation, name, id)
+	if oType == "ball" then
+
+		local ball = LocalPlayer.PlayerGui.refrenceObjects.ball:Clone()
+		ball.Name = ("B"..math.random(-500, 500))
+		ball.Position = UDim2.new(0, location.X, 0, location.Y-130)
+		ball.Parent = LocalPlayer.PlayerGui.ScreenGui.Frame.gameFrame
+		ball.Rotation = turret.Rotation
+
+		if speed ~= 0 then
+			local moveTo = UDim2.new(0, location.X+(ball.Rotation), 0, location.Y+(ball.Rotation)-130)
+			moveObject(ball, moveTo, 0.8)
+		end
+		task.wait(0.8)
+		removeObject("ball", ball.Name)
+	end
+
+	if oType == "player" then
+
+		local person = LocalPlayer.PlayerGui.refrenceObjects.playerFrame:Clone()
+		person.Name = id
+		person.player.textName.Text = name
+		person.Position = UDim2.new(0, location.X, 0, location.Y-130)
+		person.Parent = LocalPlayer.PlayerGui.ScreenGui.Frame.gameFrame
+		person.Turret.Rotation = rotation
+
+		if speed ~= 0 then
+			local moveTo = UDim2.new(0, movingTo.X, 0, movingTo.Y-130)
+			moveObject(person, moveTo, speed*2)
+		end
+	end
+
+end
+
+
+local MouseHold = false
+
+Mouse.Button1Down:Connect(function()
+	MouseHold = true
+	while MouseHold do
+			createNewObject("ball", playerPosition + Frame.playerFrame.Turret.Turret.ballSpawn.AbsolutePosition - Frame.AbsoluteSize/2)
+		task.wait(0.3)
+	end
+end)
+
+Mouse.Button1Up:Connect(function()
+MouseHold = false
+end)
+
+local function updateToSever()
+	
+	SendEvent:FireServer(moveingTo, turret.Rotation)
+end
+
+local minY = 0 + Frame.playerFrame.player.player.AbsoluteSize.Y/2
+local maxY = Frame.gameFrame.AbsoluteSize.Y - Frame.playerFrame.player.player.AbsoluteSize.Y/2
+
+
+local minX = 0 + Frame.playerFrame.player.player.AbsoluteSize.X/2
+local maxX = Frame.gameFrame.AbsoluteSize.X - Frame.playerFrame.player.player.AbsoluteSize.X/2
+
+local function movePos(letter, negative, V)
+	local s = speed
+	moveingTo[letter] = true
+	updateToSever()
+
+	while UserInput:IsKeyDown(Enum.KeyCode[letter]) do task.wait(0.03)
+		if negative == true then s = -speed else s = speed end
+
+		playerPositionY = math.clamp(playerPosition[V] + s, minY, maxY)
+
+		playerPosition = Vector2.new(playerPositionX, playerPositionY)
+		Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y)
+	end
+
+	moveingTo[letter] = false
+	updateToSever()
+
+end
+
+UserInput.InputBegan:Connect(function(object, gameProcessed:boolean)
+	if gameProcessed then return end
+	
+	if (object.KeyCode == Enum.KeyCode.W) then
+		moveingTo.w = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.W) do task.wait(0.03)
+			playerPositionY = math.clamp(playerPosition.Y -speed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		moveingTo.w = false
+		updateToSever()
+	end
+	
+	if (object.KeyCode == Enum.KeyCode.S) then
+		moveingTo.s = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.S) do task.wait(0.03)
+			playerPositionY = math.clamp(playerPosition.Y +speed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		moveingTo.s = false
+		updateToSever()
+	end
+	
+	if (object.KeyCode == Enum.KeyCode.A) then
+		moveingTo.a = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.A) do task.wait(0.03)
+			playerPositionX = math.clamp(playerPosition.X -speed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		moveingTo.a = false
+		updateToSever()
+	end
+
+	if (object.KeyCode == Enum.KeyCode.D) then
+		moveingTo.d = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.D) do task.wait(0.03)
+			playerPositionX = math.clamp(playerPosition.X +speed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		moveingTo.d = false
+		updateToSever()
+	end
+	
+	
+end)
+
+Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y + Frame.AbsoluteSize.Y/2)
+
+local function onChanged()
+	Frame.Parent.positionCounter.TextLabel.Text = (playerPosition.X..","..playerPosition.Y)
+end
+Frame.gameFrame.Changed:connect(onChanged)
+onChanged()
+
+local thickness = 4
+local color = Color3.fromRGB(19, 175, 58)
+local maxsizeX = Frame.gameFrame.AbsoluteSize.X
+local maxsizeY = Frame.gameFrame.AbsoluteSize.Y
+local count = 0
+repeat
+	count += 35
+	local line = Instance.new("Frame")
+	line.Parent = Frame.gameFrame.lineFrame
+	line.BackgroundColor3 = color
+	line.Size = UDim2.new(0,thickness, 1, 0)
+	line.Position = UDim2.new(0, count, 0, 0)
+	--line.Transparency = 0.6
+	line.BorderSizePixel = 0
+	count += thickness
+	
+until count >= maxsizeX
+count = 0
+repeat
+	count += 35
+	local line = Instance.new("Frame")
+	line.Parent = Frame.gameFrame.lineFrame
+	line.BackgroundColor3 = color
+	line.Size = UDim2.new(1, 0, 0, thickness)
+	line.Position = UDim2.new(0, 0, 0, count)
+	line.BorderSizePixel = 0
+	count += thickness
+
+until count >= maxsizeY
+
+local function onGetRequest(request, id, pos, posTo, speed, name, dataType, rotation, moveTime)
+
+	if request == "updateR" then
+		--if table.find(screenObjects, id) then print "YYYYYYYY"
+		moveTurret(Frame.gameFrame[id].Turret, rotation, Frame.gameFrame[id].Turret.Rotation)
+		--end
+	end
+	if request == "updateM" then
+		local find = Frame.gameFrame:FindFirstChild(id)
+		if find then
+		moveObject(find, UDim2.new(0, posTo.X,0, posTo.Y), moveTime)
+
+		end
+	end
+	
+	if request == "new" then
+		-- USE FOR LATER
+		if id == ("P"..LocalPlayer.UserId) then return end
+		
+		screenObjects[id] = {name, dataType, pos, posTo, rotation}
+		createNewObject("player", pos, posTo, speed, rotation, name, id)
+	end
+	
+	if request == "remove" then
+		-- USE FOR LATER
+		if id == ("P"..LocalPlayer.UserId) then return end
+		removeObject(dataType, id)
+	end
+
+end
+
+ReciveEvent.OnClientEvent:Connect(onGetRequest)
+
+
+local function moveUserTurret()
+	
+	while true do task.wait(0.03)
+		local frameCenter = turret.AbsolutePosition --+ (turret.AbsoluteSize/2)
+		local x = math.atan2(Mouse.Y - frameCenter.Y, Mouse.X - frameCenter.X)
+		turret.Rotation = math.deg(x)
+
+	end
+end
+
+moveUserTurret()
+
