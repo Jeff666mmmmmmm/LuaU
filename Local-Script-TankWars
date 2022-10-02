@@ -1,0 +1,378 @@
+-- Local Script For Managing Game
+
+-- Services
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local UserInput = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RStorage = game:GetService("ReplicatedStorage").remoteEvents
+
+-- Pointers
+local SendEvent = RStorage:WaitForChild("remoteEventSendToServer")
+local ReciveEvent = RStorage:WaitForChild("remoteEventSendToClient")
+local newRotationEvent = RStorage:WaitForChild("newRotationToClient")
+local newMoveEvent = RStorage:WaitForChild("newMoveToClient")
+local newObjectEvent = RStorage:WaitForChild("newObjectToClient")
+local newRemoveEvent = RStorage:WaitForChild("newRemoveToClient")
+local Frame = LocalPlayer.PlayerGui.ScreenGui.Frame
+local ThisUserGui = Frame:WaitForChild("playerFrame")
+local turret = ThisUserGui.Turret
+local Mouse = LocalPlayer:GetMouse()
+local RefObjects = LocalPlayer.PlayerGui:WaitForChild("refrenceObjects")
+local Controls = require(LocalPlayer.PlayerScripts.PlayerModule):GetControls()
+local roamObjects = Frame.gameFrame.roamingObjects
+local roamPlayers = Frame.gameFrame.roamingPlayers
+
+-- Player Refernce Data For Later
+local playerPositionX = 0
+local playerPositionY = 0
+local playerPosition = Vector2.new(playerPositionX, playerPositionY)
+local playerSpeed = 12
+local playerMoveingTo ={W = false,  S = false, A = false, D = false}
+local playerMouseHold = false
+
+local minY = 0
+local maxY = 1
+local minX = 0
+local maxX = 1
+
+local gamePlayers = {
+
+
+}
+
+local movingData = {
+
+
+}
+
+local lockedData = {
+
+
+} 
+
+local mobs = {
+
+
+}
+
+-- Stop Physical Player Movement
+Controls:Disable()
+
+-- Move A 2d Gui Object
+local function moveObject(object: ObjectValue, goal: UDim2, timeLength: NumberValue, stopOldTween: boolean)
+	
+	object:TweenPosition(
+		goal,          
+		Enum.EasingDirection.In,
+		Enum.EasingStyle.Linear,
+		timeLength,
+		stopOldTween
+	)
+end
+
+-- Move A Players Turret
+local function moveTurret(object: ObjectValue, goal: IntValue, rotationStart: IntValue)
+	
+	if goal > rotationStart then
+		for count = rotationStart, goal, 2 do task.wait(0.03)
+			object.Rotation = object.Rotation + 2
+		end
+	else
+		for count = rotationStart, goal, -2 do task.wait(0.03)
+			object.Rotation = object.Rotation - 2
+		end
+	end
+
+end
+
+local function removeObject(id: StringValue, oType: StringValue)
+	if oType == "ball" then
+
+		local find = roamObjects:FindFirstChild(id) 
+		if find then 
+			
+			find:TweenSize(
+				UDim2.new(0, 0, 0, 0), 
+				Enum.EasingDirection.In,  
+				Enum.EasingStyle.Linear,   
+				0.3                       
+			)
+			task.wait(0.3)
+			find:Destroy()
+		end
+	end
+
+	if oType == "player" then
+		
+		local find = roamPlayers:FindFirstChild(id) 
+		if find then 
+			
+			find:TweenSize(
+				UDim2.new(0, 0, 0, 0), 
+				Enum.EasingDirection.In,   
+				Enum.EasingStyle.Linear,    
+				0.3                         
+			)
+			task.wait(0.3)
+			find:Destroy()
+		end
+	end
+
+end
+
+-- Create A New 2d Object
+local function createNewObject(oType: StringValue, location: Vector2, movingTo: Vector2, speed: NumberValue, rotation: IntValue, name: StringValue, id: StringValue)
+	-- Create Ball Object
+	if oType == "ball" then
+		local ball = RefObjects.ball:Clone()
+		ball.Name = ("B"..math.random(0, 9999))
+		ball.Position = UDim2.new(0, location.X, 0, location.Y-130)
+		ball.Parent = roamObjects
+		ball.Rotation = turret.Rotation
+
+		if speed > 0 then
+			moveObject(ball, UDim2.new(0, location.X + ball.Rotation, 0, location.Y + ball.Rotation - 130), 2, true)
+		end
+		task.wait(2)
+		removeObject(ball.Name, "ball")
+	end
+	-- Create A New User
+	if oType == "player" then
+		local person = RefObjects.playerFrame:Clone()
+		person.Name = id
+		person.player.textName.Text = name
+		person.Position = UDim2.new(0, location.X, 0, location.Y-130)
+		person.Parent = roamPlayers
+		person.Turret.Rotation = rotation
+
+		if speed > 0 then
+			moveObject(person, UDim2.new(0, movingTo.X, 0, movingTo.Y - 130), speed * 2, true)
+		end
+	end
+
+end
+
+-- User Left Clicks
+Mouse.Button1Down:Connect(function()
+	playerMouseHold = true
+	
+	while playerMouseHold == true do
+			createNewObject("ball", playerPosition + turret.Turret.ballSpawn.AbsolutePosition - Frame.AbsoluteSize/2, nil, 20)
+		task.wait(0.5)
+	end
+	
+end)
+
+-- End Click
+Mouse.Button1Up:Connect(function()
+	
+	playerMouseHold = false
+	
+end)
+
+-- Update Information To Server
+local function updateToSever()
+	
+	SendEvent:FireServer(playerMoveingTo, turret.Rotation)
+	
+end
+
+local function getNewMaxBounds()
+	minY = 0 + ThisUserGui.player.player.AbsoluteSize.Y/2
+	maxY = Frame.gameFrame.AbsoluteSize.Y - ThisUserGui.player.player.AbsoluteSize.Y/2
+
+	minX = 0 + ThisUserGui.player.player.AbsoluteSize.X/2
+	maxX = Frame.gameFrame.AbsoluteSize.X - ThisUserGui.player.player.AbsoluteSize.X/2
+	
+end
+
+getNewMaxBounds()
+
+-- New Move Function
+local function movePos(letter: StringValue, negative: boolean, V)
+	local s = playerSpeed
+	playerMoveingTo[letter] = true
+	updateToSever()
+
+	while UserInput:IsKeyDown(Enum.KeyCode[letter]) do task.wait(0.03)
+		
+		if negative == true then s = -playerSpeed else s = playerSpeed end
+
+		playerPositionY = math.clamp(playerPosition[V] + s, minY, maxY)
+
+		playerPosition = Vector2.new(playerPositionX, playerPositionY)
+		Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y)
+	end
+
+	playerMoveingTo[letter] = false
+	updateToSever()
+
+end
+
+UserInput.InputBegan:Connect(function(key: InputObject, gameProcessed:boolean)
+	if gameProcessed then return end
+	
+	if (key.KeyCode == Enum.KeyCode.W) then
+		playerMoveingTo.w = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.W) do task.wait(0.03)
+			playerPositionY = math.clamp(playerPosition.Y -playerSpeed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		playerMoveingTo.w = false
+		updateToSever()
+	end
+	
+	if (key.KeyCode == Enum.KeyCode.S) then
+		playerMoveingTo.s = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.S) do task.wait(0.03)
+			playerPositionY = math.clamp(playerPosition.Y +playerSpeed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		playerMoveingTo.s = false
+		updateToSever()
+	end
+	
+	if (key.KeyCode == Enum.KeyCode.A) then
+		playerMoveingTo.a = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.A) do task.wait(0.03)
+			playerPositionX = math.clamp(playerPosition.X -playerSpeed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		playerMoveingTo.a = false
+		updateToSever()
+	end
+
+	if (key.KeyCode == Enum.KeyCode.D) then
+		playerMoveingTo.d = true
+		updateToSever()
+		while UserInput:IsKeyDown(Enum.KeyCode.D) do task.wait(0.03)
+			playerPositionX = math.clamp(playerPosition.X +playerSpeed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y+ Frame.AbsoluteSize.Y/2)
+		end
+		playerMoveingTo.d = false
+		updateToSever()
+	end
+	
+	
+end)
+
+Frame.gameFrame.Position = UDim2.new(0, -playerPosition.X + Frame.AbsoluteSize.X/2, 0, -playerPosition.Y + Frame.AbsoluteSize.Y/2)
+
+-- Position Counter
+local function onChanged()
+	
+	Frame.Parent.positionCounter.TextLabel.Text = (playerPosition.X..","..playerPosition.Y)
+	
+end
+Frame.gameFrame.Changed:connect(onChanged)
+
+onChanged()
+
+local thickness = 4
+local color = Color3.fromRGB(19, 175, 58)
+local maxsizeX = Frame.gameFrame.AbsoluteSize.X
+local maxsizeY = Frame.gameFrame.AbsoluteSize.Y
+local count = 0
+repeat
+	count += 35
+	local line = Instance.new("Frame")
+	line.Parent = Frame.gameFrame.lineFrame
+	line.BackgroundColor3 = color
+	line.Size = UDim2.new(0,thickness, 1, 0)
+	line.Position = UDim2.new(0, count, 0, 0)
+	line.BorderSizePixel = 0
+	count += thickness
+until count >= maxsizeX
+count = 0
+repeat
+	count += 35
+	local line = Instance.new("Frame")
+	line.Parent = Frame.gameFrame.lineFrame
+	line.BackgroundColor3 = color
+	line.Size = UDim2.new(1, 0, 0, thickness)
+	line.Position = UDim2.new(0, 0, 0, count)
+	line.BorderSizePixel = 0
+	count += thickness
+until count >= maxsizeY
+
+local function onGetRequest(request)
+
+end
+ReciveEvent.OnClientEvent:Connect(onGetRequest)
+
+-- Request To Rotate An Object
+local function onGetRequestRotation(id: StringValue, dataType: StringValue, rotation: IntValue)
+
+	if dataType == "player" then
+		--if table.find(screenObjects, id) then print "YYYYYYYY"
+			moveTurret(roamPlayers[id].Turret, rotation, roamPlayers[id].Turret.Rotation)
+		--end
+	end
+
+end
+newRotationEvent.OnClientEvent:Connect(onGetRequestRotation)
+
+-- Request To Move An Object
+local function onGetRequestMove(id: StringValue, dataType: StringValue, posTo: Vector2, moveTime: NumberValue)
+
+	if dataType == "player" then
+		local find = roamPlayers:FindFirstChild(id)
+		if find then
+			moveObject(find, UDim2.new(0, posTo.X,0, posTo.Y), moveTime)
+
+		end
+	end
+
+end
+newMoveEvent.OnClientEvent:Connect(onGetRequestMove)
+
+-- Request To Create An Object
+local function onGetRequestCreate(id: StringValue, dataType: StringValue, pos: Vector2, posTo: Vector2, moveTime: NumberValue, rotation: IntValue, name: StringValue)
+
+	if dataType == "player" then
+		local find = roamPlayers:FindFirstChild(id)
+		if find then
+			if id == ("P"..LocalPlayer.UserId) then return end
+
+			--screenObjects[id] = {name, dataType, pos, posTo, rotation}
+			createNewObject("player", pos, posTo, moveTime, rotation, name, id)
+
+		end
+	end
+
+end
+newMoveEvent.OnClientEvent:Connect(onGetRequestCreate)
+
+-- Request To Destroy An Object
+local function onGetRequestRemove(id: StringValue, dataType: StringValue)
+
+	if dataType == "player" then
+		local find = roamPlayers:FindFirstChild(id)
+		if find then
+			removeObject(find, "player")
+
+		end
+	end
+
+end
+newMoveEvent.OnClientEvent:Connect(onGetRequestRemove)
+
+
+local function moveUserTurret()
+	
+	while true do task.wait(0.03)
+		local frameCenter = turret.AbsolutePosition
+		local x = math.atan2(Mouse.Y - frameCenter.Y, Mouse.X - frameCenter.X)
+		turret.Rotation = math.deg(x)
+
+	end
+end
+
+moveUserTurret()
