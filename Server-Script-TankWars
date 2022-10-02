@@ -1,0 +1,62 @@
+local RS = game:GetService("ReplicatedStorage").remoteEvents
+
+local Players = game:GetService("Players")
+local ReciveEvent = RS:WaitForChild("remoteEventSendToServer")
+local SendEvent = RS:WaitForChild("remoteEventSendToClient")
+
+local gamePlayers = {
+
+		
+	}
+	
+local movingData = {
+
+
+
+	}
+	
+local lockedData = {
+
+
+
+	} 
+	
+local mobs = {
+		
+		
+		
+	}
+	
+	
+
+
+local function onGetRequest(player, request, movetoData, rotationData)
+	
+	if request == "update" then
+		SendEvent:FireAllClients("updateR", ("P"..player.UserId), nil, nil, gamePlayers[player.UserId].speed, nil, nil, rotationData)
+	end
+	
+end
+
+ReciveEvent.OnServerEvent:Connect(onGetRequest)
+
+
+Players.PlayerAdded:Connect(function(player)
+	
+	gamePlayers[player.UserId] = {name = player.Name, display = player.DisplayName, speed = 6}
+	
+	SendEvent:FireAllClients("new", "P"..player.UserId, Vector2.new(500,500), Vector2.new(500, 500), 4, player.DisplayName, "player", 0)
+	
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	
+	gamePlayers[player.UserId] = {nil}
+	SendEvent:FireAllClients("remove", "P"..player.UserId, nil, nil, nil, nil, "player", nil)
+	
+end)
+
+task.wait(12)
+print "add object"
+
+SendEvent:FireAllClients("new", "A432", Vector2.new(0,0), Vector2.new(0, 0), 0, "jeff", "player", -39)
