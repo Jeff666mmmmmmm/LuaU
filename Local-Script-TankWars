@@ -1,11 +1,14 @@
 -- things to do
 -- fix ball shoot
--- new move function
--- manage server movement
--- fix turret rotating
+-- make moving attacking mobs
+--levels
+-- upgrades
 
 
--- Local Script For Managing Game
+--[[
+Local Side Script
+Created by JEFF666mmmmmmm
+--]]
 
 -- Services
 local LocalPlayer = game:GetService("Players").LocalPlayer
@@ -28,25 +31,31 @@ local Mouse = LocalPlayer:GetMouse()
 
 -- Gui Pointers
 local gui = LocalPlayer.PlayerGui
-local guiGameFrame = gui.ScreenGui.Frame
+local guiGameFrame = gui:WaitForChild("ScreenGui").Frame
 local ThisUserGui = guiGameFrame:WaitForChild("playerFrame")
+local guiPlayerDead = gui.ScreenGui.deadFrame
 local turret = ThisUserGui.Turret
 
-local RefObjects = gui:WaitForChild("refrenceObjects")
+local RefObjects = gui:WaitForChild("referenceObjects")
+local RefSounds = gui:WaitForChild("referenceSounds")
 
 local guiObjectHealth = gui.ScreenGui.bottomInfoDisplay.playerHeathGui.background.health
 local guiObjectHealthMaxSize = guiObjectHealth.AbsoluteSize.X
 local guiObjectCurrentHealth = 0
 local guiObjectCurrentHealthMax = 0
 local guiObjectHealthOld = 0
+local guiObjectHealthRegen = 0
 
 local roamObjects = guiGameFrame.gameFrame.roamingObjects
-local roamPlayers = guiGameFrame.gameFrame.roamingPlayers
+local gameExtras = guiGameFrame.gameFrame.gameExtras
 local guiFrame = gui.StartGui.Frame
 local playButton = guiFrame.playButton.Button
+local endButton = gui.ScreenGui.deadFrame.Frame.Frame.okDiedButton
 local displayNameButton = guiFrame.playerName.Frame.Button
 
 -- Player Refernce Data For Later
+local playerQuad = 1
+
 local playerPositionX = 0
 local playerPositionY = 0
 local playerPosition = Vector2.new(playerPositionX, playerPositionY)
@@ -55,6 +64,8 @@ local playerSpeed = 0
 local playerMoveingTo = {W = false, S = false, A = false, D = false}
 local playerMouseHold = false
 local inGame = false
+local watchKiller = false
+local watchKillerid = {}
 local moveByServerQuest = {W = false, S = false, A = false, D = false}
 
 -- Max Game Boundries
@@ -63,7 +74,7 @@ local maxY = 1
 local minX = 0
 local maxX = 1
 
-local gamePlayers = {
+local gameEntitys = {
 
 
 }
@@ -78,19 +89,83 @@ local lockedData = {
 
 } 
 
-local mobs = {
-
-
-}
 
 local defaultPlayerInfo = {}
 
 -- Stop Physical Player Movement
 Controls:Disable()
 
+
+
+-- Update Information From Server
+local displayBoolen: BoolValue, nameText: StringValue, displayNameText: StringValue, maxGameBounds: NumberValue, lineColor:Color3Value, bGroundColor:Color3Value, waterColor:Color3Value = AskEvent:InvokeServer("getPlayerInformation")
+
+guiGameFrame.gameFrame.Size = UDim2.new(0, maxGameBounds, 0 , maxGameBounds)
+guiGameFrame.gameFrame.BackgroundColor3 = bGroundColor
+guiGameFrame.BackgroundColor3 = waterColor
+
+-- Load Background
+local function loadMapBackground()
+
+	local thickness = 5
+	local lineSpace = 45
+	local length = 0
+	local count = 0
+	local r = maxGameBounds/2
+
+	repeat
+
+		count += lineSpace
+		local line = Instance.new("Frame")
+		line.Parent = guiGameFrame.gameFrame.lineFrame
+		line.BackgroundColor3 = lineColor
+		local d = r-count
+		d *= d
+		length = 2*math.sqrt((r*r)-d)
+		line.Size = UDim2.new(0, thickness, 0, length)
+		line.Position = UDim2.new(0, count, 0, r - length/2)
+		line.BorderSizePixel = 0
+		count += thickness
+
+	until count >= maxGameBounds
+
+	count = 0
+
+	repeat
+
+		count += lineSpace
+		local line = Instance.new("Frame")
+		line.Parent = guiGameFrame.gameFrame.lineFrame
+		line.BackgroundColor3 = lineColor
+
+		local d = r-count
+		d *= d
+		length = 2*math.sqrt((r*r)-d)
+		line.Size = UDim2.new(0, length, 0, thickness)
+		line.Position = UDim2.new(0, r - length/2, 0, count)
+		line.BorderSizePixel = 0
+		count += thickness
+
+	until count >= maxGameBounds
+
+end
+loadMapBackground()
+
+if displayBoolen == true then
+	displayNameButton.Text = ("X")
+else
+	displayNameButton.Text = ("")
+end
+
+if displayNameText ~= "{nil}" then
+	displayNameButton.Parent.TextLabel.Text = (displayNameText)
+else
+	guiFrame.playerName.Frame.Visible = false
+end
+
 -- Move A 2d Gui Object
 local function moveObject(object: ObjectValue, goal: UDim2, timeLength: NumberValue, stopOldTween: boolean)
-	
+
 	object:TweenPosition(
 		goal,
 		Enum.EasingDirection.In,
@@ -102,7 +177,7 @@ end
 
 -- Move A Players Turret
 local function moveTurret(object: ObjectValue, goal: IntValue, rotationStart: IntValue)
-	
+
 	if goal > rotationStart then
 		for count = rotationStart, goal, 2 do task.wait(0.03)
 			object.Rotation = object.Rotation + 2
@@ -120,7 +195,7 @@ local function removeObject(id: StringValue, oType: StringValue)
 
 		local find = roamObjects:FindFirstChild(id)
 		if find then
-			
+
 			find:TweenSize(
 				UDim2.new(0, 0, 0, 0),
 				Enum.EasingDirection.In,
@@ -132,10 +207,11 @@ local function removeObject(id: StringValue, oType: StringValue)
 		end
 	end
 
-	if oType == "player" then
-		
-		local find = roamPlayers:FindFirstChild(id)
+	if oType == "entity" then
+
+		local find = roamObjects:FindFirstChild(id)
 		if find then
+			if gameEntitys[id].tank ~= "LandMine" then
 			find.player.BackgroundColor3 = Color3.fromRGB(122, 36, 36)
 			find.player.player.BackgroundColor3 = Color3.fromRGB(255, 41, 41)
 			find.Turret.Turret.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -146,14 +222,38 @@ local function removeObject(id: StringValue, oType: StringValue)
 				0.3
 			)
 			task.wait(0.3)
-			find:Destroy()
+				find:Destroy()
+			else
+				find:Destroy()
+				local clone = RefSounds.bomb1:Clone()
+				clone.Parent = gameExtras
+				clone.PlaybackSpeed = (1 + (math.random(0, 5)/10))
+				clone.Volume = (0.5)
+				clone:Play()
+				
+				local clone2 = RefObjects.land_mine_explosion:Clone()
+				clone2.Parent = gameExtras
+				clone2.Position = UDim2.new(0, gameEntitys[id].position.X, 0, gameEntitys[id].position.Y) 
+				clone2:TweenSize(
+					UDim2.new(0, 200, 0, 200),
+					Enum.EasingDirection.Out,
+					Enum.EasingStyle.Back,
+					0.2
+				)
+				task.wait(0.22)
+				clone2:Destroy()
+				task.wait(0.28)
+				clone:Destroy()
+				gameEntitys[id]["dead"] = true
+				gameEntitys[id] = nil
+			end
 		end
 	end
 
 end
 
 -- Create A New 2d Object
-local function createNewObject(oType: StringValue, location: Vector2, movingTo: Vector2, speed: NumberValue, rotation: IntValue, name: StringValue, id: StringValue)
+local function createNewObject(oType: StringValue, location: Vector2, movingTo: Vector2, speed: NumberValue, rotation: IntValue, name: StringValue, id: StringValue, tankType: StringValue)
 
 	-- Create Ball Object
 	if oType == "ball" then
@@ -169,18 +269,22 @@ local function createNewObject(oType: StringValue, location: Vector2, movingTo: 
 		task.wait(2)
 		removeObject(ball.Name, "ball")
 	end
-	-- Create A New User
-	if oType == "player" then
-		local person = RefObjects.playerFrame:Clone()
+	-- Create A New Entity
+	if oType == "entity" then
+		local person = RefObjects[tankType]:Clone()
 		person.Name = id
-		person.player.textName.Text = name
 		person.Position = UDim2.new(0, location.X, 0, location.Y)
-		person.Parent = roamPlayers
-		person.Turret.Rotation = rotation
-
+		person.Parent = roamObjects
+		
+		if tankType == "Tank" then
+			person.Turret.Rotation = rotation
+			person.player.textName.Text = name
+		end
+		
 		if speed > 0 then
 			moveObject(person, UDim2.new(0, movingTo.X, 0, movingTo.Y), speed * 2, true)
 		end
+		
 	end
 
 end
@@ -189,71 +293,26 @@ end
 Mouse.Button1Down:Connect(function()
 	if inGame == true then
 		playerMouseHold = true
-	
+
 		while playerMouseHold == true do
 			createNewObject("ball", playerPosition + (turret.Turret.ballSpawn.AbsolutePosition - (guiGameFrame.AbsoluteSize/2)), nil, 20)
 			task.wait(0.5)
 		end
- 	end
+	end
 end)
 
 -- End Click
 Mouse.Button1Up:Connect(function()
-	
+
 	playerMouseHold = false
-	
+
 end)
 
 -- Update Information To Server
 local function updateToSever()
-	
+
 	SendEvent:FireServer("update", playerMoveingTo, turret.Rotation)
-	
-end
 
--- Update Information From Server
-local displayBoolen: BoolValue, nameText: StringValue, displayNameText: StringValue, maxGameBounds: NumberValue = AskEvent:InvokeServer("getPlayerInformation")
-
-guiGameFrame.gameFrame.Size = UDim2.new(0, maxGameBounds, 0 , maxGameBounds)
-
--- Load Background
-local thickness = 4
-local color = Color3.fromRGB(19, 175, 58)
-local maxsizeX = guiGameFrame.gameFrame.AbsoluteSize.X
-local maxsizeY = guiGameFrame.gameFrame.AbsoluteSize.Y
-local count = 0
-repeat
-	count += 35
-	local line = Instance.new("Frame")
-	line.Parent = guiGameFrame.gameFrame.lineFrame
-	line.BackgroundColor3 = color
-	line.Size = UDim2.new(0, thickness, 1, 0)
-	line.Position = UDim2.new(0, count, 0, 0)
-	line.BorderSizePixel = 0
-	count += thickness
-until count >= maxsizeX
-count = 0
-repeat
-	count += 35
-	local line = Instance.new("Frame")
-	line.Parent = guiGameFrame.gameFrame.lineFrame
-	line.BackgroundColor3 = color
-	line.Size = UDim2.new(1, 0, 0, thickness)
-	line.Position = UDim2.new(0, 0, 0, count)
-	line.BorderSizePixel = 0
-	count += thickness
-until count >= maxsizeY
-
-if displayBoolen == true then
-	displayNameButton.Text = ("X")
-else
-	displayNameButton.Text = ("")
-end
-
-if displayNameText ~= "{nil}" then
-	displayNameButton.Parent.TextLabel.Text = (displayNameText)
-else
-	guiFrame.playerName.Frame.Visible = false
 end
 
 -- Max Allowed player Bounds
@@ -268,34 +327,13 @@ end
 
 getNewMaxBounds()
 
--- New Move Function
-local function movePos(letter: StringValue, negative: boolean, V)
-	local s = playerSpeed
-	playerMoveingTo[letter] = true
-	updateToSever()
-
-	while UserInput:IsKeyDown(Enum.KeyCode[letter]) do task.wait(0.03)
-		
-		if negative == true then s = -playerSpeed else s = playerSpeed end
-
-		playerPositionY = math.clamp(playerPosition[V] + s, minY, maxY)
-
-		playerPosition = Vector2.new(playerPositionX, playerPositionY)
-		guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y)
+-- Position Map
+local function onChanged(id, X, Y)
+	local find = gui.ScreenGui.positionCounter.mapItems:FindFirstChild(id)
+	if find then
+		find.Position = UDim2.new(0, 120/maxX*(X),0, 120/maxY*(Y))
 	end
-
-	playerMoveingTo[letter] = false
-	updateToSever()
-
 end
-
--- Position Counter
-local function onChanged()
-
-	gui.ScreenGui.positionCounter.TextLabel.Text = (playerPosition.X..","..playerPosition.Y)
-
-end
-onChanged()
 
 -- User Uses Keyboard
 UserInput.InputBegan:Connect(function(key: InputObject, gameProcessed:boolean)
@@ -304,41 +342,41 @@ UserInput.InputBegan:Connect(function(key: InputObject, gameProcessed:boolean)
 	if (key.KeyCode == Enum.KeyCode.W) then
 		playerMoveingTo.W = true
 		updateToSever()
-		while UserInput:IsKeyDown(Enum.KeyCode.W) do task.wait(0.03) onChanged()
-			--if moveByServerQuest.W == false then
-				playerPositionY = math.clamp(playerPosition.Y -playerSpeed, minY, maxY)
+		while UserInput:IsKeyDown(Enum.KeyCode.W) do task.wait(0.03)
+			if not moveByServerQuest.W then
+				playerPositionY = math.clamp(playerPosition.Y -(playerSpeed/2), minY, maxY)
 				playerPosition = Vector2.new(playerPositionX, playerPositionY)
 				guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
-			--	end
 			end
+		end
 		playerMoveingTo.W = false
 		updateToSever()
 	end
-	
+
 	if (key.KeyCode == Enum.KeyCode.S) then
 		playerMoveingTo.S = true
 		updateToSever()
-		while UserInput:IsKeyDown(Enum.KeyCode.S) do task.wait(0.03) onChanged()
-			--if moveByServerQuest.S == false then
-				playerPositionY = math.clamp(playerPosition.Y +playerSpeed, minY, maxY)
+		while UserInput:IsKeyDown(Enum.KeyCode.S) do task.wait(0.03)
+			if not moveByServerQuest.S then
+				playerPositionY = math.clamp(playerPosition.Y +(playerSpeed/2), minY, maxY)
 				playerPosition = Vector2.new(playerPositionX, playerPositionY)
 				guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
-			--	end
 			end
+		end
 		playerMoveingTo.S = false
 		updateToSever()
 	end
-	
+
 	if (key.KeyCode == Enum.KeyCode.A) then
 		playerMoveingTo.A = true
 		updateToSever()
-		while UserInput:IsKeyDown(Enum.KeyCode.A) do task.wait(0.03) onChanged()
-			--if moveByServerQuest.A == false then
-				playerPositionX = math.clamp(playerPosition.X -playerSpeed, minX, maxX)
+		while UserInput:IsKeyDown(Enum.KeyCode.A) do task.wait(0.03)
+			if not moveByServerQuest.A then
+				playerPositionX = math.clamp(playerPosition.X -(playerSpeed/2), minX, maxX)
 				playerPosition = Vector2.new(playerPositionX, playerPositionY)
 				guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
-			--	end
 			end
+		end
 		playerMoveingTo.A = false
 		updateToSever()
 	end
@@ -346,26 +384,26 @@ UserInput.InputBegan:Connect(function(key: InputObject, gameProcessed:boolean)
 	if (key.KeyCode == Enum.KeyCode.D) then
 		playerMoveingTo.D = true
 		updateToSever()
-		while UserInput:IsKeyDown(Enum.KeyCode.D) do task.wait(0.03) onChanged()
-			--if moveByServerQuest.D == false then
-				playerPositionX = math.clamp(playerPosition.X +playerSpeed, minX, maxX)
+		while UserInput:IsKeyDown(Enum.KeyCode.D) do task.wait(0.03)
+			if not moveByServerQuest.D then
+				playerPositionX = math.clamp(playerPosition.X +(playerSpeed/2), minX, maxX)
 				playerPosition = Vector2.new(playerPositionX, playerPositionY)
 				guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
-			--end
+			end		
 		end
 		playerMoveingTo.D = false
 		updateToSever()
 	end
-	
-	
+
+
 end)
 
 -- Request To Rotate An Object
 local function onGetRequestRotation(id: StringValue, dataType: StringValue, rotation: IntValue)
 
-	if dataType == "player" then
+	if dataType == "entity" then
 		
-			moveTurret(roamPlayers[id].Turret, rotation, roamPlayers[id].Turret.Rotation)
+			moveTurret(roamObjects[id].Turret, rotation, roamObjects[id].Turret.Rotation)
 	
 	end
 
@@ -375,34 +413,44 @@ newRotationEvent.OnClientEvent:Connect(onGetRequestRotation)
 -- Request To Move An Object
 local function onGetRequestMove(id: StringValue, dataType: StringValue, posTo: Vector2, moveW: boolean, moveS: boolean, moveA: boolean, moveD: boolean)
 
-	if dataType == "player" then
+	if dataType == "entity" and id ~= LocalPlayer.UserId then
 		local find = false
 		
-		for i, o in pairs(gamePlayers) do
+		for i, o in pairs(gameEntitys) do
 		if o.id == id then find = true end
 		end
 		if find then
-			
-			moveObject(roamPlayers[id], UDim2.new(0, posTo.X, 0, posTo.Y), 0.5, false)
+			onChanged(id, posTo.X, posTo.Y)
+			moveObject(roamObjects[id], UDim2.new(0, posTo.X, 0, posTo.Y), 0.5, false)
 
 		end
 	end
 	
 	if id == LocalPlayer.UserId then
+		onChanged(id, posTo.X, posTo.Y)
 		
 		playerPositionY = posTo.Y
 		playerPositionX = posTo.X
 		playerPosition = posTo
+		local makeMove = false
+		local diff = Vector2.new(math.round(playerPositionX-posTo.X), math.round(playerPositionY-posTo.Y))
+		if diff.X > 40 or diff.Y > 40 then
+			makeMove = true
+		end
 		
 		moveByServerQuest = {W = moveW, S = moveS, A = moveA, D = moveD}
-
-		guiGameFrame.gameFrame:TweenPosition(
-			UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y+ guiGameFrame.AbsoluteSize.Y/2),
-			Enum.EasingDirection.In,
-			Enum.EasingStyle.Linear,
-			0.4,
-			false
-		)
+		
+		if (not moveW and not moveS and not moveA and not moveD) or makeMove and inGame then
+			guiGameFrame.gameFrame:TweenPosition(
+				UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y+ guiGameFrame.AbsoluteSize.Y/2),
+				Enum.EasingDirection.In,
+				Enum.EasingStyle.Linear,
+				0.2,
+				false
+			)
+		end
+		
+		
 	end
 	
 end
@@ -411,20 +459,20 @@ newMoveEvent.OnClientEvent:Connect(onGetRequestMove)
 -- Request To Create An Object
 local function onGetRequestCreate(id: StringValue, dataType: StringValue, object: Player_Array)
 
-	if dataType == "player" then
+	if dataType == "entity" then
 		local find = false
 
-		for i, o in pairs(gamePlayers) do
+		for i, o in pairs(gameEntitys) do
 			if o.id == id then find = true end
 		end
-		
-		if not find and id ~= LocalPlayer.UserId then
-		
-			createNewObject("player", object[1], object[1], 0, object[12], object[4], object[5])
 
-			gamePlayers[id] = {defaultPlayerInfo}
-			local user = gamePlayers[id]
-			--position, quad, radius, displayName, id, speed, tank, health, maxHealth, bodyDamage, bodyBounce, rotation, movingTo, lastCPUupdate
+		if not find and id ~= LocalPlayer.UserId then
+
+			createNewObject("entity", object[1], object[1], 0, object[13], object[4], object[5], object[7])
+
+			gameEntitys[id] = {defaultPlayerInfo}
+			local user = gameEntitys[id]
+			--position, quad, radius, displayName, id, speed, tank, health, maxHealth, healthregen, bodyDamage, bodyBounce, rotation, movingTo
 			user["position"] = object[1]
 			user["quad"] = object[2]
 			user["radius"] = object[3]
@@ -434,11 +482,31 @@ local function onGetRequestCreate(id: StringValue, dataType: StringValue, object
 			user["tank"] = object[7]
 			user["health"] = object[8]
 			user["maxHealth"] = object[9]
-			user["bodyDamage"] = object[10]
-			user["bodyBounce"] = object[11]
-			user["rotation"] = object[12]
-			user["movingTo"] = object[13]
-			user["lastCPUupdate"] = object[14]
+			user["healthRegen"] = object[10]
+			user["bodyDamage"] = object[11]
+			user["bodyBounce"] = object[12]
+			user["rotation"] = object[13]
+			user["movingTo"] = object[14]
+			user["dead"] = false
+			user["lastCPUupdate"] = os.clock()
+			
+			local clone = RefObjects.defaultMapCircle:Clone()
+			clone.Parent = gui.ScreenGui.positionCounter.mapItems
+			clone.Name = id
+			clone.BackgroundColor3 = Color3.fromRGB(255, 0, 4)
+			onChanged(id, object[1].X, object[1].Y)
+			
+		elseif not find and id == LocalPlayer.UserId then
+			
+			guiObjectHealthRegen = object[10]
+			guiObjectCurrentHealthMax = object[9]
+			guiObjectCurrentHealth = object[8]
+			
+			local clone = RefObjects.defaultMapCircle:Clone()
+			clone.Parent = gui.ScreenGui.positionCounter.mapItems
+			clone.Name = id
+			onChanged(id, object[1].X, object[1].Y)
+			
 		end
 	end
 
@@ -446,17 +514,40 @@ end
 newObjectEvent.OnClientEvent:Connect(onGetRequestCreate)
 
 -- Request To Destroy An Object
-local function onGetRequestRemove(id: StringValue, dataType: StringValue)
+local function onGetRequestRemove(id: StringValue, dataType: StringValue, killerid: StringValue)
 
-	if dataType == "player" then
-		local find = false
+	if dataType == "entity" then
 
-		for i, o in pairs(gamePlayers) do
-			if o.id == id then find = true end
-		end
-		if find then
-			removeObject(id, "player")
+		if id ~= LocalPlayer.UserId then
 
+			local find = false
+
+			for i, o in pairs(gameEntitys) do
+				if o.id == id then find = true end
+			end
+			if find then
+				removeObject(id, "entity")
+				gui.ScreenGui.positionCounter.mapItems[id]:Destroy()
+			end
+
+		else
+			inGame = false
+
+			guiPlayerDead.Visible = true
+			guiGameFrame.playerFrame.Visible = false
+			
+			local Info = gameEntitys[killerid]
+
+			if Info then
+
+				watchKillerid = {
+					dead = false,
+					KillerInfo = killerid
+				}
+
+				watchKiller = true
+			end
+			
 		end
 	end
 
@@ -485,22 +576,28 @@ local function updateHealth(health: NumberValue, max: NumberValue)
 
 	-- End
 	guiObjectHealth.Parent.Parent.number.Text = (health.."/"..max)
-	
+
 	guiObjectHealthOld = health
 
 end
 
 -- Start Game
 local function onPlayButtonActivated()
+	watchKiller = false
 	gui.StartGui.Enabled = false
 	guiGameFrame.playerFrame.Visible = true
 	gui.ScreenGui.positionCounter.Visible = true
 	gui.ScreenGui.bottomInfoDisplay.Visible = true
 	
+	local find = gui.ScreenGui.positionCounter.mapItems:FindFirstChild(LocalPlayer.UserId)
+	if find then
+		find:Destroy()
+	end
 	
 	local canJoin: BoolValue, joinpos: Vector2, health: IntValue, maxhealth: IntValue, display: StringValue, speed: IntValue, tank: StringValue = AskEvent:InvokeServer("addPlayerInformation")
 	
 	if canJoin == true then
+		
 		
 		playerSpeed = speed
 		
@@ -525,6 +622,13 @@ local function onPlayButtonActivated()
 	else
 		warn("Denied game entry")
 	end
+	--task.wait(5)
+	--gameEntitys = {}
+	--guiGameFrame.gameFrame.roamingObjects:ClearAllChildren()
+	--gui.ScreenGui.positionCounter.mapItems:ClearAllChildren()
+	--task.wait(5)
+	--local num = AskEvent:InvokeServer("loadEntitys")
+	--print (num)
 	
 end
 playButton.Activated:Connect(onPlayButtonActivated)
@@ -541,6 +645,18 @@ local function onDisplayName()
 end
 displayNameButton.Activated:Connect(onDisplayName)
 
+local function onEndButtonActivated()
+	gui.StartGui.Enabled = true
+	guiGameFrame.playerFrame.Visible = false
+	gui.ScreenGui.positionCounter.Visible = false
+	gui.ScreenGui.bottomInfoDisplay.Visible = false
+	
+	guiPlayerDead.Visible = false
+	
+
+end
+endButton.Activated:Connect(onEndButtonActivated)
+
 local dayTable = {}
 
 local dayTable = AskEvent:InvokeServer("getDayInformation")
@@ -549,6 +665,8 @@ local function updateDaySlider(object: ObjectValue, info: IntValue, weekDay: Str
 	local changed = false
 	object.inside.label.Text = weekDay
 	if (info > -1 and info < 75) or (info > 345 and info < 366) then
+		guiFrame.dayFrame.seasonLabel.Text = "Winter"
+		guiFrame.dayFrame.seasonLabel.TextColor = Color3.fromRGB(138, 218, 255)
 		object.inside.BackgroundColor3 = Color3.fromRGB(146, 174, 180)
 		
 		if info == 358 or info == 359 or info == 360 then
@@ -559,16 +677,22 @@ local function updateDaySlider(object: ObjectValue, info: IntValue, weekDay: Str
 	end
 	
 	if info > 75 and info < 165 then
+		guiFrame.dayFrame.seasonLabel.Text = "Spring"
+		guiFrame.dayFrame.seasonLabel.TextColor = Color3.fromRGB(26, 255, 0)
 		object.inside.BackgroundColor3 = Color3.fromRGB(96, 234, 32)
 
 	end
 	
 	if info > 165 and info < 255 then
+		guiFrame.dayFrame.seasonLabel.Text = "Summer"
+		guiFrame.dayFrame.seasonLabel.TextColor = Color3.fromRGB(14, 122, 0)
 		object.inside.BackgroundColor3 = Color3.fromRGB(12, 165, 1)
 
 	end
 	
 	if info > 255 and info < 345 then
+		guiFrame.dayFrame.seasonLabel.Text = "Fall"
+		guiFrame.dayFrame.seasonLabel.TextColor3 = Color3.fromRGB(255, 137, 2)
 		object.inside.BackgroundColor3 = Color3.fromRGB(208, 121, 0)
 		
 		if info == 303 or info == 304 or info == 305 then
@@ -588,15 +712,15 @@ local function updateDaySlider(object: ObjectValue, info: IntValue, weekDay: Str
 	end
 end
 
-local ima = guiFrame.dayFrame:GetChildren()
+local ima = guiFrame.dayFrame
 
-for i = 1, #ima do
-	
-	updateDaySlider(ima[i], tonumber(dayTable["d"..(i-1)]), dayTable["w"..(i-1)])
+for i = 0, 4, 1 do
 
-	ima[i].MouseEnter:Connect(function()
+	updateDaySlider(ima["day"..i], tonumber(dayTable["d"..(i)]), dayTable["w"..(i)])
 
-		ima[i].inside:TweenSize(
+	ima["day"..i].MouseEnter:Connect(function()
+
+		ima["day"..i].inside:TweenSize(
 			UDim2.new(1, 3, 1, 3),
 			Enum.EasingDirection.In,
 			Enum.EasingStyle.Linear,
@@ -607,9 +731,9 @@ for i = 1, #ima do
 
 	end)
 
-	ima[i].MouseLeave:Connect(function()
+	ima["day"..i].MouseLeave:Connect(function()
 
-		ima[i].inside:TweenSize(
+		ima["day"..i].inside:TweenSize(
 			UDim2.new(1, -6, 1, -6),
 			Enum.EasingDirection.In,
 			Enum.EasingStyle.Linear,
@@ -627,8 +751,61 @@ local function onGetRequest(request: StringValue, id: StringValue, info, info2)
 	if request == "health" and id == LocalPlayer.UserId then
 
 		updateHealth(info, info2)
-
+		guiObjectCurrentHealth = info
+		guiObjectCurrentHealthMax = info2
 	end
 
 end
 ReciveEvent.OnClientEvent:Connect(onGetRequest)
+
+local loop count = 0
+while true do task.wait(0.03)
+	if inGame then
+		onChanged(LocalPlayer.UserId, playerPositionX, playerPositionY)
+		count += 1
+		if count == 3 then
+			count = 0
+			guiObjectCurrentHealth = guiObjectCurrentHealth + guiObjectHealthRegen
+			if guiObjectCurrentHealth > guiObjectCurrentHealthMax then
+				guiObjectCurrentHealth = guiObjectCurrentHealthMax
+			end
+			updateHealth(guiObjectCurrentHealth, guiObjectCurrentHealthMax)
+		end
+		if moveByServerQuest.W then
+
+			playerPositionY = math.clamp(playerPosition.Y -playerSpeed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
+		end
+
+		if moveByServerQuest.S then
+
+			playerPositionY = math.clamp(playerPosition.Y +playerSpeed, minY, maxY)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
+		end
+
+		if moveByServerQuest.A then
+			playerPositionX = math.clamp(playerPosition.X -playerSpeed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
+		end
+
+		if moveByServerQuest.D then
+			playerPositionX = math.clamp(playerPosition.X +playerSpeed, minX, maxX)
+			playerPosition = Vector2.new(playerPositionX, playerPositionY)
+			guiGameFrame.gameFrame.Position = UDim2.new(0, -playerPosition.X + guiGameFrame.AbsoluteSize.X/2, 0, -playerPosition.Y + guiGameFrame.AbsoluteSize.Y/2)
+		end
+		
+	elseif watchKiller then
+		if roamObjects:FindFirstChild(watchKillerid.KillerInfo) then
+
+			guiGameFrame.gameFrame.Position = UDim2.new(0, -roamObjects[watchKillerid.KillerInfo].Position.X.Offset + guiGameFrame.AbsoluteSize.X/2, 0, -roamObjects[watchKillerid.KillerInfo].Position.Y.Offset + guiGameFrame.AbsoluteSize.Y/2)
+			task.wait(0.1)
+		else
+			watchKiller = false
+		end
+
+	end
+
+end
