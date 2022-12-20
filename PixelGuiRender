@@ -1,0 +1,166 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+local camera = workspace.CurrentCamera
+
+local P = 8
+
+local X = 0
+local Y = 0
+
+local Visualtype = "D"
+local VisualtypeText = "Distance"
+
+local function newSquares()
+	
+	script.Parent.Quality.Text = ("Quality: "..P.." Video Type: "..VisualtypeText)
+	
+	for i,v in pairs(script.Parent:GetChildren()) do
+		if v:IsA("Frame") then
+			v:Destroy()
+		end
+	end
+	local X1 = 0
+	local Y1 = 0
+
+	while Y1 < 200 do
+	
+		local new = Instance.new("Frame")
+		new.Parent = script.Parent
+		new.Position = UDim2.new(0, X1, 0, Y1)
+		new.Size = UDim2.new(0, P, 0, P)
+		new.Name = (X1.."N"..Y1)
+		new.BorderSizePixel = 0
+	
+	
+		X1 += P
+		if X1 > 200 then
+			X1 = 0
+			Y1 += P
+		end
+	end
+end
+newSquares()
+
+local m = 0
+mouse.Move:Connect(function()
+	m = 8
+	script.Parent.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
+end)
+
+local function onInputBegan(input, gameProcessed)
+
+	if not gameProcessed then
+
+		if input.KeyCode == Enum.KeyCode.R then
+			
+			Visualtype = "C"
+			VisualtypeText = "Color"
+			
+		end
+		
+		if input.KeyCode == Enum.KeyCode.T then
+			
+			Visualtype = "D"
+			VisualtypeText = "Distance"
+
+		end
+		
+		if input.KeyCode == Enum.KeyCode.E then	
+			local oldP = P
+			
+			if P == 5 then
+				P = 4
+			end
+			if P == 8 then
+				P = 5
+			end
+			if P == 10 then
+				P = 8
+			end
+			if P == 20 then
+				P = 10
+			end
+			if P == 25 then
+				P = 20
+			end	
+
+			if oldP ~= P then
+				newSquares()
+			end
+		end
+		
+		if input.KeyCode == Enum.KeyCode.Q then	
+			local oldP = P
+			
+			if P == 20 then
+				P = 25
+			end
+			if P == 10 then
+				P = 20
+			end
+			if P == 8 then
+				P = 10
+			end
+			if P == 5 then
+				P = 8
+			end
+			if P == 4 then
+				P = 5
+			end
+			
+			if oldP ~= P then
+				newSquares()
+			end
+		end
+		
+	end	
+end
+UserInputService.InputBegan:Connect(onInputBegan)
+
+X = 0
+Y = 0
+
+while true do
+
+	local unitRay = camera:ScreenPointToRay(script.Parent[X.."N"..Y].AbsolutePosition.X, script.Parent[X.."N"..Y].AbsolutePosition.Y)
+	local ray = workspace:Raycast(unitRay.Origin, unitRay.Direction * 255)
+
+	if ray then
+		
+		if Visualtype == "C" then
+			script.Parent[X.."N"..Y].BackgroundColor3 = ray.Instance.Color
+		end
+		
+		if Visualtype == "D" then
+			script.Parent[X.."N"..Y].BackgroundColor3 = Color3.fromRGB(math.round(ray.Distance), 0, 0)
+		end
+		
+	end
+
+
+	X += P
+	if X > 200 then
+		X = 0
+		Y += P
+		--task.wait(0.05)
+	end
+	
+	if Y  > (200-P) then
+		Y = 0
+		X = 0
+		if m > 0 then
+			task.wait(0.03)
+			m -= 1
+		else
+			
+			for i = 0, 5 do
+				task.wait(0.4)
+				if m > 0 then break end
+			end
+			
+		end
+		
+	end
+end
