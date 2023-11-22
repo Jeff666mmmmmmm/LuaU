@@ -1,0 +1,55 @@
+local blocks = game.Workspace.Water
+local players = {}
+
+-- Handling Water Interactions
+for _, block in pairs(blocks:GetChildren()) do
+    -- Set audio properties for water effect
+    block.watereffect.lake_water.RollOffMaxDistance = (block.water.Size.X + block.water.Size.Z / 2.5)
+    block.watereffect.splash.RollOffMaxDistance = (block.water.Size.X + block.water.Size.Z / 3)
+
+    -- Create an invisible outer boundary for each water block
+    local outerBoundary = Instance.new("Part")
+    outerBoundary.Name = "Outter"
+    outerBoundary.Parent = block
+    outerBoundary.Anchored = true
+    outerBoundary.Size = Vector3.new(block.water.Size.X + 7, block.water.Size.Y + 7, block.water.Size.Z + 7)
+    outerBoundary.Transparency = 1
+    outerBoundary.CanCollide = false
+    outerBoundary.Position = block.water.Position
+
+    -- When a player touches the water
+    block.water.Touched:Connect(function(hit)
+        local humanoid = hit.Parent:FindFirstChild("Humanoid")
+        if humanoid then
+            local player = game.Players:GetPlayerFromCharacter(hit)
+            if player then
+                local isPlayerInWater = table.find(players, player.UserId)
+                if not isPlayerInWater then
+                    -- Reduce walk speed when player touches water
+                    humanoid.WalkSpeed = 8
+                    table.insert(players, player.UserId)
+                    task.wait(4)
+                end
+            end
+        end
+    end)
+
+    -- When a player stops touching the water
+    local function stopTouch(hit)
+        local humanoid = hit.Parent:FindFirstChild("Humanoid")
+        if humanoid then
+            local player = game.Players:GetPlayerFromCharacter(hit)
+            if player then
+                local stats = player:FindFirstChild("stats")
+                local isPlayerInWater = table.find(players, player.UserId)
+                if isPlayerInWater and stats then
+                    -- Reset walk speed when player leaves water
+                    humanoid.WalkSpeed = 16 + stats.speed.Value
+                    task.wait(0.15)
+                    table.remove(players, isPlayerInWater)
+                end
+            end
+        end
+    end
+    block.Outter.TouchEnded:Connect(stopTouch)
+end
