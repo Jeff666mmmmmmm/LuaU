@@ -1,55 +1,98 @@
-local blocks = game.Workspace.Water
-local players = {}
+local RS = game:GetService("ReplicatedStorage")
+local SummonObjects = RS:FindFirstChild("SummonObjects")
+local SplashBlock = SummonObjects and SummonObjects:FindFirstChild("liquidSplashBlock")
 
--- Handling Water Interactions
-for _, block in pairs(blocks:GetChildren()) do
-    -- Set audio properties for water effect
-    block.watereffect.lake_water.RollOffMaxDistance = (block.water.Size.X + block.water.Size.Z / 2.5)
-    block.watereffect.splash.RollOffMaxDistance = (block.water.Size.X + block.water.Size.Z / 3)
+local waterFolder = game.Workspace.Water
+-- Table to track players in water
+local playersInWater = {}
 
-    -- Create an invisible outer boundary for each water block
-    local outerBoundary = Instance.new("Part")
-    outerBoundary.Name = "Outter"
-    outerBoundary.Parent = block
-    outerBoundary.Anchored = true
-    outerBoundary.Size = Vector3.new(block.water.Size.X + 7, block.water.Size.Y + 7, block.water.Size.Z + 7)
-    outerBoundary.Transparency = 1
-    outerBoundary.CanCollide = false
-    outerBoundary.Position = block.water.Position
+-- Function to check if a player has left the water
+local function checkIfPlayerLeftWater(player, waterBlock)
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local playerPosition = player.Character.HumanoidRootPart.Position
+		local waterPosition = waterBlock.Position
+		local waterSize = waterBlock.Size
+		local inX = math.abs(playerPosition.X - waterPosition.X) < waterSize.X / 2
+		local inY = math.abs(playerPosition.Y - waterPosition.Y) < waterSize.Y / 2
+		local inZ = math.abs(playerPosition.Z - waterPosition.Z) < waterSize.Z / 2
 
-    -- When a player touches the water
-    block.water.Touched:Connect(function(hit)
-        local humanoid = hit.Parent:FindFirstChild("Humanoid")
-        if humanoid then
-            local player = game.Players:GetPlayerFromCharacter(hit)
-            if player then
-                local isPlayerInWater = table.find(players, player.UserId)
-                if not isPlayerInWater then
-                    -- Reduce walk speed when player touches water
-                    humanoid.WalkSpeed = 8
-                    table.insert(players, player.UserId)
-                    task.wait(4)
-                end
-            end
-        end
-    end)
+		if not (inX and inY and inZ) then
+			-- Player has left the water, reset speed and remove from table
+			local humanoid = player.Character:FindFirstChild("Humanoid")
+			if humanoid then
+				humanoid.WalkSpeed = 16 -- Reset to normal speed
+			end
+			playersInWater[player.UserId] = nil
+		end
+	end
+end
 
-    -- When a player stops touching the water
-    local function stopTouch(hit)
-        local humanoid = hit.Parent:FindFirstChild("Humanoid")
-        if humanoid then
-            local player = game.Players:GetPlayerFromCharacter(hit)
-            if player then
-                local stats = player:FindFirstChild("stats")
-                local isPlayerInWater = table.find(players, player.UserId)
-                if isPlayerInWater and stats then
-                    -- Reset walk speed when player leaves water
-                    humanoid.WalkSpeed = 16 + stats.speed.Value
-                    task.wait(0.15)
-                    table.remove(players, isPlayerInWater)
-                end
-            end
-        end
-    end
-    block.Outter.TouchEnded:Connect(stopTouch)
+-- Function to summon block when player enters water
+local function spawnWaterSplash(player, water)
+	if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local clone = SplashBlock:Clone()
+		
+		-- Move Effect block to Y, top of water and X Z of player
+		local playerPosition = player.Character.HumanoidRootPart.Position
+		local waterTopY = water.Position.Y + (water.Size.Y/2)
+		clone.Position = Vector3.new(playerPosition.X, waterTopY, playerPosition.Z)
+		clone.Parent = game.Workspace
+
+		-- Change the color of the BlockEffect to match the water
+		local blockEffect = clone:FindFirstChild("BlockEffect")
+		if blockEffect then
+			blockEffect.Color = ColorSequence.new(water.Color, water.Color)
+		end
+		
+		
+		if math.random(1,2) == 1 then
+			clone.splash.Playing = false
+		end
+		
+		-- Disable the effect after 0.5 seconds and delete the block after 0.8 seconds
+		delay(0.2, function()
+			if blockEffect then
+				blockEffect.Enabled = false
+			end
+			wait(0.8)
+			clone:Destroy()
+		end)
+	end
+end
+
+-- Function to handle the player entering the water block
+local function onEnter(waterBlock)
+	return function(hit)
+		
+		local humanoid = hit.Parent:FindFirstChild("Humanoid")
+		local player = game.Players:GetPlayerFromCharacter(hit.Parent)
+		
+		if humanoid and player then
+			-- Reduce walk speed and track the player
+			humanoid.WalkSpeed = 8
+			playersInWater[player.UserId] = waterBlock
+			
+			spawnWaterSplash(player, waterBlock)
+		end
+	end
+end
+
+-- Connect water blocks to the onEnter function
+for _, subfolder in pairs(waterFolder:GetChildren()) do
+	if subfolder:FindFirstChild("water") then
+		subfolder.water.Touched:Connect(onEnter(subfolder.water))
+	end
+end
+
+-- Periodically check if players have left the water
+while wait(2) do
+	for userId, waterBlock in pairs(playersInWater) do
+		local player = game.Players:GetPlayerByUserId(userId)
+		if player then
+			checkIfPlayerLeftWater(player, waterBlock)
+		else
+			-- Player left the game, remove from the table
+			playersInWater[userId] = nil
+		end
+	end
 end
