@@ -3,21 +3,23 @@ local DataStore = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProximityPromptService = game:GetService("ProximityPromptService")
-local playerService = game:GetService('Players')
+local PlayerService = game:GetService('Players')
 local Debris = game:GetService("Debris")
+local BadgeService = game:GetService("BadgeService")
+local ServerStorage = game:GetService("ServerStorage")
 
 -- Remote events
 local NotificationEvent = ReplicatedStorage:WaitForChild("Event_notification")
 local DeathEvent = ReplicatedStorage:WaitForChild("Event_die")
 local BuyGamePassEvent = ReplicatedStorage:WaitForChild("Event_buypass")
 local BuyItemEvent = ReplicatedStorage:WaitForChild("Event_Buyitem")
-local openQuestGuiEvent = ReplicatedStorage:WaitForChild("Event_TriggerQuestGui")
-local openCustomePickaxeGuiEvent = ReplicatedStorage:WaitForChild("Event_PickaxeShop")
-local triggerShopGuiEvent = ReplicatedStorage:WaitForChild("Event_TriggerCam")
-local updateBackPackNumberEvent = ReplicatedStorage:WaitForChild("Event_updatebackpacknumber")
-local updateBackPackEvent = ReplicatedStorage:WaitForChild("Event_updatebackpack")
-local updatePickaxeEvent = ReplicatedStorage:WaitForChild("Event_updatepickaxe")
-local teleportEvent = ReplicatedStorage:WaitForChild("Event_Teleport")
+local OpenQuestGuiEvent = ReplicatedStorage:WaitForChild("Event_TriggerQuestGui")
+local OpenCustomePickaxeGuiEvent = ReplicatedStorage:WaitForChild("Event_PickaxeShop")
+local TriggerShopGuiEvent = ReplicatedStorage:WaitForChild("Event_TriggerCam")
+local UpdateBackPackNumberEvent = ReplicatedStorage:WaitForChild("Event_updatebackpacknumber")
+local UpdateBackPackEvent = ReplicatedStorage:WaitForChild("Event_updatebackpack")
+local UpdatePickaxeEvent = ReplicatedStorage:WaitForChild("Event_updatepickaxe")
+local TeleportEvent = ReplicatedStorage:WaitForChild("Event_Teleport")
 
 -- Replicated items
 local PickaxeFolder = ReplicatedStorage.pickfolder
@@ -53,42 +55,184 @@ local function IsValidAudio(AudioId)
 			return false
 		end
 
-		-- Not a number
+		
 	else
+		-- Not a number
 		return false
 	end
 end
 
--- Load user pickaxe
-local function loadpickaxe(player, isSkinNew)
+-- Get datastore function
+local function getDataFromDataStore(sectionName, user)
+	local attempts = 0
+	local maxAttempts = 2
 	
-	-- Get player bools
-	local userSavingBools = player.savingnonboolstats
+	-- Get datastore section from text given
+	local sectionSuccess, DataStoreSection = pcall(function()
+		return DataStore:GetDataStore(sectionName)
+	end)
+	
+	-- Section not found
+	if not sectionSuccess then
+		
+		-- Notify user of error
+		NotificationEvent:FireClient(user, "Internal DataStore getData Roblox Error", nil, "Error", 25)
+		warn("F - getDataFromDataStore - Failed retrieving data section " .. user.userId .. ": " .. sectionName)
+	end
+	
+	-- Attempt to get datastore data if not max attempts and section found
+	while attempts < maxAttempts and sectionSuccess do
+		
+		local success, result = pcall(function()
+			return DataStoreSection:GetAsync(user.userId)
+		end)
 
+		if success then
+			
+			-- Return result or nil if empty
+			return result or nil
+		else
+			-- Failed and trys once more
+			attempts = attempts + 1
+			
+			if attempts < maxAttempts then
+				task.wait(5)
+			else
+				-- Notify user of error
+				NotificationEvent:FireClient(user, "Internal DataStore getData Roblox Error", nil, "Error", 25)
+				warn("F - getDataFromDataStore - Failed retrieving data user " .. user.userId)
+			end
+		end
+	end
+
+	return nil
+end
+
+-- Set datastore function
+local function setDataToDataStore(sectionName, user, data, deadline)
+	
+	-- If deadline to set data then end early
+	if deadline then
+		
+		DataStore:GetDataStore(sectionName):SetAsync(user.userId, data)
+		return
+	end
+	
+	local attempts = 0
+	local maxAttempts = 2
+	
+	-- Get datastore section from text given
+	local sectionSuccess, DataStoreSection = pcall(function()
+		return DataStore:GetDataStore(sectionName)
+	end)
+
+	-- Section not found
+	if not sectionSuccess then
+		
+		-- Notify user of error
+		NotificationEvent:FireClient(user, "Internal DataStore setData Roblox Error", nil, "Error", 25)
+		warn("F - getDataFromDataStore - Failed set data section " .. user.userId .. ": " .. sectionName)
+	end
+
+	-- Attempt to set datastore data
+	while attempts < maxAttempts and sectionSuccess do
+		
+		local success, result = pcall(function()
+			DataStoreSection:SetAsync(user.userId, data)
+		end)
+
+		if not success then
+			
+			-- Failed and tries once more
+			attempts = attempts + 1
+
+			if attempts < maxAttempts then
+				task.wait(5)
+			else
+				-- Notify user of error
+				NotificationEvent:FireClient(user, "Internal DataStore setData Roblox Error", nil, "Error", 25)
+				warn("F - setDataToDataStore - Failed setting data for user " .. user.userId .. ": " .. result, false)
+			end
+		end
+	end
+end
+
+-- Award badgte
+local function awardBadge(user, badge)
+	
+	local joinbadgeId = nil
+	badge = badge or "SetNil"
+	
+	if badge == "joinBadge" then
+		
+		joinbadgeId = (2124888302)
+	end
+	
+	-- If no badge with the name is found
+	if not joinbadgeId then
+		
+		warn("F - awardBadge - No badge of ("..badge..") exists")
+	end
+	
+	-- Get badge information
+	local success, badgeInfo = pcall(function()
+		return BadgeService:GetBadgeInfoAsync(joinbadgeId)
+	end)
+	
+	if success then
+		
+		-- Confirm that badge can be awarded
+		if badgeInfo.IsEnabled then
+			
+			-- Award badge
+			pcall(function()
+				BadgeService:AwardBadge(user.UserId, joinbadgeId)
+			end)
+		end
+	end
+end
+
+-- Load user pickaxe
+local function loadpickaxe(user, isSkinNew)
+	
+	-- User not loaded in
+	if not user:WaitForChild("isLoaded", 15) then
+		
+		warn("F - loadpickaxe - No pickaxe loaded")
+		return
+	end
+	
+	-- Get user bools
+	local userSavingBools = user.savingnonboolstats
+	
 	-- Remove old pickaxe from backpack
-	if player.Backpack:FindFirstChild("Pickaxe") then
-		player.Backpack.Pickaxe:Destroy()
+	if user.Backpack:FindFirstChild("Pickaxe") then
+		
+		user.Backpack.Pickaxe:Destroy()
 	end
 	
 	-- Remove old pickaxe from character
-	if player.Character:FindFirstChild("Pickaxe") then
-		player.Character.Pickaxe:Destroy()
+	if user.Character:FindFirstChild("Pickaxe") then
+		
+		user.Character.Pickaxe:Destroy()
 	end
 
 	-- Generate new pickaxe model
 	local newPickaxe = PickaxeModelFolder["model"..userSavingBools.pickaxemodel.Value].Pickaxe:Clone()
-	newPickaxe.Parent = player.Backpack
+	newPickaxe.Parent = user.Backpack
 	
 	local pickaxeAnimationsClone = PickaxeModelFolder.Animations:Clone()
 	pickaxeAnimationsClone.Parent = newPickaxe
 
 	-- Create value for skin to use
-	local storedSkin = ""
+	local storedSkin = nil
 	
 	-- Load skin
-	if isSkinNew == "new" then
+	if isSkinNew then
+		
 		storedSkin = PickaxeSkinsFolder["skin"..userSavingBools.PickaxeSkin.Value]
 	else
+		
 		storedSkin = PickaxeSkinsFolder["skin"..PickaxeFolder["pick"..userSavingBools.pickaxenumber.Value]:GetAttribute("skin")]
 	end
 
@@ -119,25 +263,23 @@ local function loadpickaxe(player, isSkinNew)
 		audioClone.Parent = newPickaxe.Handle
 		
 		-- Load audio script
-		local audioScriptClone = game.ServerStorage.AudioScript:Clone()
+		local audioScriptClone = ServerStorage.AudioScript:Clone()
 		audioScriptClone.Parent = audioClone
-		
 	end
 
 	-- Load user chosen music
-	if userSavingBools.music.Value == 0 and player.stats.vip_pass.Value == true then
+	if userSavingBools.music.Value == 0 and user.stats.vip_pass.Value == true then
 		
 		-- Load empty audio
 		local audioClone = AudioFolder.music1:Clone()
 		audioClone.Parent = newPickaxe.Handle
 		
 		-- Load audio script
-		local audioScriptClone = game.ServerStorage.AudioScript:Clone()
+		local audioScriptClone = ServerStorage.AudioScript:Clone()
 		audioScriptClone.Parent = audioClone
 		
 		-- Set audio to chosen song
-		audioClone.SoundId = ("rbxassetid://"..player.stats.AudioID.Value)
-		
+		audioClone.SoundId = ("rbxassetid://"..user.stats.AudioID.Value)
 	end
 
 	-- Load effect to pickaxe
@@ -146,20 +288,77 @@ local function loadpickaxe(player, isSkinNew)
 		local effectClone = EffectsFolder["trail"..userSavingBools.effect.Value]:Clone()
 		effectClone.Parent = newPickaxe.Handle
 	end
-	
+
 	-- Update hitpower from current pickaxe owned
-	player.stats.HitPower.Value = PickaxeFolder["pick"..userSavingBools.pickaxenumber.Value]:GetAttribute("storage")	
+	user.stats.HitPower.Value = PickaxeFolder["pick"..userSavingBools.pickaxenumber.Value]:GetAttribute("storage")	
+end
+
+-- Load in finial user information from join
+local function loadInUser(user)
+
+	workspace:WaitForChild(user.Name, 15)
+
+	local savingStatsFolder = user.savingstats
+	local savingNonBoolStatsFolder = user.savingnonboolstats
+
+	-- Update effect
+	if savingNonBoolStatsFolder.effect.Value ~= 0 then
+		if savingStatsFolder["effect"..savingNonBoolStatsFolder.effect.Value].Value == false then
+			savingNonBoolStatsFolder.effect.Value = 0
+		end
+	end
+
+	-- Update music
+	if savingNonBoolStatsFolder.music.Value ~= 0 and savingNonBoolStatsFolder.music.Value ~= -1 then
+		if savingStatsFolder["music"..savingNonBoolStatsFolder.music.Value].Value == false then
+			savingNonBoolStatsFolder.music.Value = -1 
+		end 
+	end
+
+	-- Update skin
+	if savingStatsFolder["skin"..savingNonBoolStatsFolder.PickaxeSkin.Value].Value == false then
+		savingNonBoolStatsFolder.PickaxeSkin.Value = 1 
+	end
+
+	-- Update pickaxe number
+	if savingStatsFolder["pick"..savingNonBoolStatsFolder.pickaxenumber.Value].Value == false then
+		savingNonBoolStatsFolder.pickaxenumber.Value = 1 
+	end
+
+	-- Update backpack number
+	if savingStatsFolder["back"..savingNonBoolStatsFolder.backpacknumber.Value].Value == false then
+		savingNonBoolStatsFolder.backpacknumber.Value = 1
+	end
+
+	local clone = ReplicatedStorage.backfolder["back"..savingNonBoolStatsFolder.backpacknumber.Value]:Clone()
+	clone.Parent = workspace[user.Name]
+	clone.Name = "PlayerBackPack"
+	
+	user.stats.BackPacksize.Value = ReplicatedStorage.backfolder["back"..savingNonBoolStatsFolder.backpacknumber.Value]:GetAttribute("storage")
+
+	if MarketplaceService:UserOwnsGamePassAsync(user.UserId, 23438610) then
+		user.stats.vip_pass.Value = true
+		user.stats.speed.Value += 2
+		user.Character.Humanoid.WalkSpeed += user.stats.speed.Value
+	end
+
+	local isLoaded = Instance.new("BoolValue")
+
+	isLoaded.Name = "isLoaded"
+	isLoaded.Value = true
+	isLoaded.Parent = user
+
 end
 
 -- Buy item request
-BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
+BuyItemEvent.OnServerEvent:Connect(function(user, buyRequest, itemid)
 	
 	-- Get data
-	local userCash = player:WaitForChild("leaderstats", 10).Money or 0
+	local userCash = user:WaitForChild("leaderstats", 10).Money or 0
 	itemid = itemid or 1
 	
-	-- Get player bools
-	local userSavingBools = player.savingnonboolstats
+	-- Get user bools
+	local userSavingBools = user.savingnonboolstats
 
 	-- Request to buy a backpack
 	if buyRequest == "BackPack" then
@@ -168,62 +367,59 @@ BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
 		if BackpackFolder:FindFirstChild("back"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, contine
-			if userCash.Value >= BackpackFolder["back"..itemid]:GetAttribute("price") and player.savingstats["back"..itemid].Value == false then
+			if userCash.Value >= BackpackFolder["back"..itemid]:GetAttribute("price") and user.savingstats["back"..itemid].Value == false then
 
 				-- Update stats in game
-				player.savingstats["back"..itemid].Value = true
+				user.savingstats["back"..itemid].Value = true
 				userCash.Value -= BackpackFolder["back"..itemid]:GetAttribute("price")
-				player.stats.BackPacksize.Value = BackpackFolder["back"..itemid]:GetAttribute("storage")
+				user.stats.BackPacksize.Value = BackpackFolder["back"..itemid]:GetAttribute("storage")
 				userSavingBools.backpacknumber.Value = itemid
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("back"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
+				setDataToDataStore("back"..itemid, user, true, false)
 
 
 				-- Remove old backpack
-				if player.Character:FindFirstChild("PlayerBackPack")then
-					player.Character.PlayerBackPack:Destroy()
+				if user.Character:FindFirstChild("PlayerBackPack")then
+					user.Character.PlayerBackPack:Destroy()
 				end
 
 				-- Generate new backpack 
 				local newBackpackclone = BackpackFolder["back"..itemid]:Clone()
-				newBackpackclone.Parent = player.Character
+				newBackpackclone.Parent = user.Character
 				newBackpackclone.Name = "PlayerBackPack"
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, BackpackFolder["back"..itemid]:GetAttribute("name"), "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, BackpackFolder["back"..itemid]:GetAttribute("name"), "1", "BuyItem")
 				
 				return
 			end 
 		end	
 
 	-- Request to buy a pickaxe
-	elseif buyRequest == "Pickaxe" then 
+	elseif buyRequest == "Pickaxe" then
 		
 		-- If pickaxe with given itemid exists, contine
 		if PickaxeFolder:FindFirstChild("pick"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, contine
-			if userCash.Value >= PickaxeFolder["pick"..itemid]:GetAttribute("price") and player.savingstats["pick"..itemid].Value == false then
+			if userCash.Value >= PickaxeFolder["pick"..itemid]:GetAttribute("price") and user.savingstats["pick"..itemid].Value == false then
 
 				-- Update stats in game
-				player.savingstats["pick"..itemid].Value = true
+				user.savingstats["pick"..itemid].Value = true
 				userCash.Value -= PickaxeFolder["pick"..itemid]:GetAttribute("price")
 				userSavingBools.pickaxenumber.Value = itemid
 				userSavingBools.PickaxeSkin.Value = PickaxeFolder["pick"..itemid]:GetAttribute("skin")
-				player.savingstats["skin"..PickaxeFolder["pick"..itemid]:GetAttribute("skin")].Value = true
+				user.savingstats["skin"..PickaxeFolder["pick"..itemid]:GetAttribute("skin")].Value = true
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("pick"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
-
+				setDataToDataStore("pick"..itemid, user, true, false)
 
 				-- Generate new pickaxe
-				loadpickaxe(player, "new")
+				loadpickaxe(user, true)
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, PickaxeFolder["pick"..itemid]:GetAttribute("name"), "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, PickaxeFolder["pick"..itemid]:GetAttribute("name"), "1", "BuyItem")
 				
 				return
 			end 
@@ -236,18 +432,17 @@ BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
 		if PickaxeSkinsFolder:FindFirstChild("skin"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, and is avaible to buy, contine
-			if userCash.Value >= PickaxeSkinsFolder["skin"..itemid]:GetAttribute("price") and player.savingstats["skin"..itemid].Value == false and PickaxeSkinsFolder["skin"..itemid]:GetAttribute("buy") == true then
+			if userCash.Value >= PickaxeSkinsFolder["skin"..itemid]:GetAttribute("price") and user.savingstats["skin"..itemid].Value == false and PickaxeSkinsFolder["skin"..itemid]:GetAttribute("buy") == true then
 
 				-- Update stats in gam
-				player.savingstats["skin"..itemid].Value = true
+				user.savingstats["skin"..itemid].Value = true
 				userCash.Value -= PickaxeSkinsFolder["skin"..itemid]:GetAttribute("price")
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("skin"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
+				setDataToDataStore("skin"..itemid, user, true, false)
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, PickaxeSkinsFolder["skin"..itemid]:GetAttribute("name").." Skin", "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, PickaxeSkinsFolder["skin"..itemid]:GetAttribute("name").." Skin", "1", "BuyItem")
 				
 				return
 			end 
@@ -260,18 +455,17 @@ BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
 		if PickaxeModelFolder:FindFirstChild("model"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, and is avaible to buy, contine
-			if userCash.Value >= PickaxeModelFolder["model"..itemid]:GetAttribute("price") and player.savingstats["model"..itemid].Value == false and PickaxeModelFolder["model"..itemid]:GetAttribute("buy") == true then
+			if userCash.Value >= PickaxeModelFolder["model"..itemid]:GetAttribute("price") and user.savingstats["model"..itemid].Value == false and PickaxeModelFolder["model"..itemid]:GetAttribute("buy") == true then
 
 				-- Update stats in gam
-				player.savingstats["model"..itemid].Value = true
+				user.savingstats["model"..itemid].Value = true
 				userCash.Value -= PickaxeModelFolder["model"..itemid]:GetAttribute("price")
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("model"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
+				setDataToDataStore("model"..itemid, user, true, false)
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, PickaxeModelFolder["model"..itemid]:GetAttribute("name").." Frame", "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, PickaxeModelFolder["model"..itemid]:GetAttribute("name").." Frame", "1", "BuyItem")
 				
 				return
 			end 
@@ -284,18 +478,17 @@ BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
 		if EffectsFolder:FindFirstChild("trail"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, and is avaible to buy, contine
-			if userCash.Value >= EffectsFolder["trail"..itemid]:GetAttribute("price") and player.savingstats["effect"..itemid].Value == false and EffectsFolder["trail"..itemid]:GetAttribute("buy") == true then
+			if userCash.Value >= EffectsFolder["trail"..itemid]:GetAttribute("price") and user.savingstats["effect"..itemid].Value == false and EffectsFolder["trail"..itemid]:GetAttribute("buy") == true then
 
 				-- Update stats in gam
-				player.savingstats["effect"..itemid].Value = true
+				user.savingstats["effect"..itemid].Value = true
 				userCash.Value -= EffectsFolder["trail"..itemid]:GetAttribute("price")
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("trail"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
+				setDataToDataStore("trail"..itemid, user, true, false)
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, EffectsFolder["trail"..itemid]:GetAttribute("name").." Trail", "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, EffectsFolder["trail"..itemid]:GetAttribute("name").." Trail", "1", "BuyItem")
 				
 				return
 			end 
@@ -308,72 +501,67 @@ BuyItemEvent.OnServerEvent:Connect(function(player, buyRequest, itemid)
 		if AudioFolder:FindFirstChild("music"..itemid) then
 			
 			-- If user has sufficent cash, and does not own item aredy, and is avaible to buy, contine
-			if userCash.Value >= AudioFolder["music"..itemid]:GetAttribute("price") and player.savingstats["music"..itemid].Value == false and AudioFolder["music"..itemid]:GetAttribute("buy") == true then
+			if userCash.Value >= AudioFolder["music"..itemid]:GetAttribute("price") and user.savingstats["music"..itemid].Value == false and AudioFolder["music"..itemid]:GetAttribute("buy") == true then
 
 				-- Update stats in gam
-				player.savingstats["music"..itemid].Value = true
+				user.savingstats["music"..itemid].Value = true
 				userCash.Value -= AudioFolder["music"..itemid]:GetAttribute("price")
 				
 				-- Update dateStore for item
-				local dataStoreSlot = DataStore:GetDataStore("music"..itemid)
-				dataStoreSlot:SetAsync(player.UserId, true)
+				setDataToDataStore("music"..itemid, user, true, false)
 
-				-- Notification to user
-				NotificationEvent:FireClient(player, AudioFolder["music"..itemid]:GetAttribute("name").." Music", "1", "BuyItem")
+				-- Notify user
+				NotificationEvent:FireClient(user, AudioFolder["music"..itemid]:GetAttribute("name").." Music", "1", "BuyItem")
 				
 				return
 			end
 		end
-
 	end 
-
-
 end)
 
 -- Update backpack storage text
-updateBackPackNumberEvent.OnServerEvent:Connect(function(player)
+UpdateBackPackNumberEvent.OnServerEvent:Connect(function(user)
 	
 	-- If user has a backpack
-	if player.Character:FindFirstChild("PlayerBackPack") then
+	if user.Character:FindFirstChild("PlayerBackPack") then
 
 		-- Change text
-		player.Character.PlayerBackPack.Text.gui.TextLabel.Text = ((player.stats.TotalBackPackinput.Value.."/"..player.stats.BackPacksize.Value.." Storage"))
+		user.Character.PlayerBackPack.Text.gui.TextLabel.Text = ((user.stats.TotalBackPackinput.Value.."/"..user.stats.BackPacksize.Value.." Storage"))
 	end
 end)
 
 -- Equipt backpack
-updateBackPackEvent.OnServerEvent:Connect(function(player, number)
+UpdateBackPackEvent.OnServerEvent:Connect(function(user, number)
 	number = number or 1
 
 	-- If backpack exists
-	if player.savingstats:FindFirstChild("back"..number) then
+	if user.savingstats:FindFirstChild("back"..number) then
 		
 		-- If owned then equipt
-		if player.savingstats["back"..number].Value == true then
+		if user.savingstats["back"..number].Value == true then
 
 			-- Destroy old backpack if found
-			if player.Character:FindFirstChild("PlayerBackPack") then
-				player.Character.PlayerBackPack:Destroy()
+			if user.Character:FindFirstChild("PlayerBackPack") then
+				user.Character.PlayerBackPack:Destroy()
 			end
 
 			-- Update backpack number
-			player.savingnonboolstats.backpacknumber.Value = number
+			user.savingnonboolstats.backpacknumber.Value = number
 
 			-- Generate new backpack
 			local clone = BackpackFolder["back"..number]:Clone()
-			clone.Parent = player.Character
+			clone.Parent = user.Character
 			clone.Name = "PlayerBackPack"
 
-			if player.savingstats["back"..number].Value == true then
-				player.stats.BackPacksize.Value = BackpackFolder["back"..number]:GetAttribute("storage")
+			if user.savingstats["back"..number].Value == true then
+				user.stats.BackPacksize.Value = BackpackFolder["back"..number]:GetAttribute("storage")
 			end
-
 		end
 	end
 end)
 
 -- Request to generate new pickaxe
-updatePickaxeEvent.OnServerEvent:Connect(function(player, number, load, skin, audio, model, effect, AudioID)
+UpdatePickaxeEvent.OnServerEvent:Connect(function(user, number, load, skin, audio, model, effect, AudioID)
 	
 	-- Set default values
 	number = number or 0
@@ -384,18 +572,20 @@ updatePickaxeEvent.OnServerEvent:Connect(function(player, number, load, skin, au
 
 	-- Generates chosen pickaxe
 	if load == "equipt" then
+		
 		-- If pickaxe number exists
-		if player.savingstats:FindFirstChild("pick"..number) then
+		if user.savingstats:FindFirstChild("pick"..number) then
+			
 			-- If user owns this pickaxe
-			if player.savingstats:FindFirstChild("pick"..number).Value == true then
+			if user.savingstats:FindFirstChild("pick"..number).Value == true then
 
 				-- Update in game stats
-				player.savingnonboolstats.pickaxenumber.Value = number
-				player.savingnonboolstats.PickaxeSkin.Value = PickaxeFolder["pick"..number]:GetAttribute("skin")
-				player.savingstats["skin"..PickaxeFolder["pick"..number]:GetAttribute("skin")].Value = true
+				user.savingnonboolstats.pickaxenumber.Value = number
+				user.savingnonboolstats.PickaxeSkin.Value = PickaxeFolder["pick"..number]:GetAttribute("skin")
+				user.savingstats["skin"..PickaxeFolder["pick"..number]:GetAttribute("skin")].Value = true
 
 				-- Generate orignal pickaxe
-				loadpickaxe(player, "orignal")
+				loadpickaxe(user, false)
 			end
 		end
 
@@ -403,16 +593,18 @@ updatePickaxeEvent.OnServerEvent:Connect(function(player, number, load, skin, au
 	elseif load == "new" then
 		
 		-- User saving bools
-		local bools = player.savingstats
+		local bools = user.savingstats
 
 		-- Custome skin
 		if skin ~= 0 then
+			
 			-- Does skin exist
 			local findSkin = bools:FindFirstChild("skin"..skin)
-			if findSkin then 
+			if findSkin then
+				
 				-- If user has skin then equipt it
 				if findSkin.Value == true then
-					player.savingnonboolstats.PickaxeSkin.Value = skin
+					user.savingnonboolstats.PickaxeSkin.Value = skin
 				end
 			end
 		end
@@ -424,46 +616,49 @@ updatePickaxeEvent.OnServerEvent:Connect(function(player, number, load, skin, au
 			local findAudio = bools:FindFirstChild("music"..audio)
 			if findAudio then
 				if findAudio.Value == true then
-					player.savingnonboolstats.music.Value = audio
+					user.savingnonboolstats.music.Value = audio
 				end
 			end
 		end
 
 		-- Custome audio
 		if audio == 0 then
+			
 			-- Check to make sure valid audio id
 			if IsValidAudio(AudioID) == true then
 				
-				-- Check to see if player has vip
-				if player.stats.vip_pass == true then
+				-- Check to see if user has vip
+				if user.stats.vip_pass == true then
 					
-					player.savingnonboolstats.music.Value = 0 
-					player.stats.AudioID.Value = (AudioID or 0)
+					user.savingnonboolstats.music.Value = 0
+					user.stats.AudioID.Value = (AudioID or 0)
 					
-					local dataStoreSlot = DataStore:GetDataStore("MusicID")
-					dataStoreSlot:SetAsync(player.UserId, player.stats.AudioID.Value)
+					-- Update Info
+					setDataToDataStore("MusicID", user, user.stats.AudioID.Value, false)
 				end
 			else
 
-				-- Notifaction to user of error
-				NotificationEvent:FireClient(player, "Invalid Audio ID", nil, "Error")
+				-- Notify user of error
+				NotificationEvent:FireClient(user, "Invalid Audio ID", nil, "Error", 25)
 			end
 		end
 
 		-- No audio
 		if audio == -1 then
-			player.savingnonboolstats.music.Value = -1
+			user.savingnonboolstats.music.Value = -1
 		end 
 
 		-- Custome model
 		if model ~= 0 then
+			
 			-- Ensure model exists
 			local findModel = bools:FindFirstChild("model"..model)
-			if findModel then 
+			if findModel then
+				
 				-- If user owns it
 				if findModel.Value == true then
 
-					player.savingnonboolstats.pickaxemodel.Value = model
+					user.savingnonboolstats.pickaxemodel.Value = model
 				end 
 			end 
 		end
@@ -477,24 +672,24 @@ updatePickaxeEvent.OnServerEvent:Connect(function(player, number, load, skin, au
 				-- If user owns it
 				if findEffect.Value == true then
 
-					player.savingnonboolstats.effect.Value = effect
+					user.savingnonboolstats.effect.Value = effect
 				end 
 			end 
 		else
 			-- No trail
-			player.savingnonboolstats.effect.Value = 0
+			user.savingnonboolstats.effect.Value = 0
 		end
 
 		-- Generate new pickaxe
-		loadpickaxe(player, "new")
+		loadpickaxe(user, true)
 	end
-
 end)
 
 -- Teleport user request
-teleportEvent.OnServerEvent:Connect(function(player, location)
+TeleportEvent.OnServerEvent:Connect(function(user, location)
+	
 	-- Get height
-	local userHeight = player.Character:FindFirstChild("HumanoidRootPart").Position.Y or 0
+	local userHeight = user.Character:FindFirstChild("HumanoidRootPart").Position.Y or 0
 
 	-- Request to surface
 	if location == "Surface" then
@@ -503,72 +698,71 @@ teleportEvent.OnServerEvent:Connect(function(player, location)
 		if userHeight > 0 then
 			userHeight = 0 
 		end
+		
 		-- Correct cost
 		if userHeight < 0 then
 			userHeight = math.abs(userHeight)
 			userHeight = userHeight/2
 			userHeight = math.round(userHeight)
 		end
+		
 		-- Min cost
 		if userHeight < 15 then
 			userHeight = 15
 		end
+		
 		-- Vip discount
-		if player.stats.vip_pass.Value == true then
+		if user.stats.vip_pass.Value == true then
 			userHeight -= math.round(userHeight*.05)
 		end
 
 		-- Update in game stats
-		if userHeight <= player.leaderstats.Money.Value then
-			player.leaderstats.Money.Value -= userHeight
+		if userHeight <= user.leaderstats.Money.Value then
+			user.leaderstats.Money.Value -= userHeight
 			
 			-- Teleport user
-			player.Character:MoveTo(game.Workspace.SurfaceMineshaft.Teleport_part.Position)
+			user.Character:MoveTo(workspace.SurfaceMineshaft.Teleport_part.Position)
 		end
-
 	end
-
 end)
 
 -- Buy gamepass
-BuyGamePassEvent.OnServerEvent:Connect(function(player, id, info)
+BuyGamePassEvent.OnServerEvent:Connect(function(user, id, info)
 
 	-- Ensure request is for gamepass
 	if info == "VIP" then
 		
 		-- Prompt purchase
-		MarketplaceService:PromptGamePassPurchase(player, id)
+		MarketplaceService:PromptGamePassPurchase(user, id)
 	end 
-
 end)
 
 -- Manage recept
-game:GetService("MarketplaceService").ProcessReceipt = function(ReceiptInfo)
-	local Purchasing_Player = game.Players:GetPlayerByUserId(ReceiptInfo.PlayerId)
+MarketplaceService.ProcessReceipt = function(ReceiptInfo)
+	local Purchasing_Player = PlayerService:GetPlayerByUserId(ReceiptInfo.PlayerId)
 
-	-- Player recives cash type one
+	-- User recives cash type one
 	if ReceiptInfo.ProductId == 1211101864 then
 		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then
 			Purchasing_Player.leaderstats.Money.Value += 550
 
-			-- Notifaction to user
+			-- Notify user
 			NotificationEvent:FireClient(Purchasing_Player, "Money", "550", "Money")
 		end 
 	end
 
-	-- Player recives cash type two
+	-- User recives cash type two
 	if ReceiptInfo.ProductId == 1211101865 then
 		if Purchasing_Player and Purchasing_Player:FindFirstChild('leaderstats') then
 			Purchasing_Player.leaderstats.Money.Value += 2600
 
-			-- Notifaction to user
+			-- Notify user
 			NotificationEvent:FireClient(Purchasing_Player, "Money", "2600", "Money")
 		end
 	end	
 
 	-- Tell roblox that transaction cleared
 	return Enum.ProductPurchaseDecision.PurchaseGranted
-
 end
 
 -- Drops users backpack
@@ -576,12 +770,14 @@ local function dropBackPack(user, character)
 
 	-- Gather value for data analysis
 	local itemsValue = 0
+	
+	local characterPosition = character.HumanoidRootPart.Position
 
 	local dropedItemsFolder = Instance.new("Folder")
 	dropedItemsFolder.Name = "dropedItemsFolder"
-	dropedItemsFolder.Parent = game.Workspace.DebrisReadyFolder
+	dropedItemsFolder.Parent = workspace.DebrisReadyFolder
 
-	-- Ignore player with raycast
+	-- Ignore user with raycast
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
 	raycastParams.FilterDescendantsInstances = {workspace.Terrain}
@@ -611,7 +807,7 @@ local function dropBackPack(user, character)
 			local raycastDistance = math.random(2, 14)
 
 			-- Perform the raycast
-			local rayResult = workspace:Raycast(character.HumanoidRootPart.Position, raycastDirection * raycastDistance, raycastParams)
+			local rayResult = workspace:Raycast(characterPosition, raycastDirection * raycastDistance, raycastParams)
 
 			-- Check if the raycast worked
 			if rayResult then
@@ -621,11 +817,11 @@ local function dropBackPack(user, character)
 					part.Position = rayResult.Position
 				else
 
-					part.Position = (character.HumanoidRootPart.Position + raycastDirection * raycastDistance)
+					part.Position = (characterPosition + raycastDirection * raycastDistance)
 				end
 			else
 
-				part.Position = (character.HumanoidRootPart.Position + raycastDirection * raycastDistance)
+				part.Position = (characterPosition + raycastDirection * raycastDistance)
 			end
 
 			local light = Instance.new("PointLight")
@@ -659,7 +855,7 @@ local function dropBackPack(user, character)
 			end
 
 			-- If humanoid is a user then continue
-			local user = playerService:GetPlayerFromCharacter(humanoid.Parent)
+			local user = PlayerService:GetPlayerFromCharacter(humanoid.Parent)
 			
 			if not user then
 				return 
@@ -687,21 +883,71 @@ local function dropBackPack(user, character)
 			-- Add ore to backpack storage
 			stats.TotalBackPackinput.Value = stats.TotalBackPackinput.Value + (OreData[oreNumber].w)
 
-			-- Notifaction to user
+			-- Notify user
 			NotificationEvent:FireClient(user, OreData[oreNumber or "p1"].n, 1, "Ore")
 
 			object:Destroy()
 		end)
-
 	end
 
 	-- Set folder to be removed after
 	Debris:AddItem(dropedItemsFolder, 125)
 end
 
--- User died function
-playerService.PlayerAdded:Connect(function(user)
+-- User join function
+PlayerService.PlayerAdded:Connect(function(user)
+	
+	-- Clone user stats
+	local clone = ServerStorage.stats:Clone()
+	clone.Parent = user		
+
+	-- Handle datastore, money leaderstat
+	local LeaderStat = Instance.new("Folder", user)
+	LeaderStat.Name = "leaderstats"
+	
+	local MoneyValue = Instance.new("NumberValue", LeaderStat)
+	MoneyValue.Name = "Money"
+	MoneyValue.Value = getDataFromDataStore("Money", user) or 15
+
+	-- Create folder for user bool stats
+	local savingBoolStatsFolder = Instance.new("Folder", user)
+	savingBoolStatsFolder.Name = "savingstats"
+	
+	-- Get all bool values from user datastore
+	for i, boolValue in pairs(ServerStorage.savingstats:GetChildren()) do
+		
+		local UserBoolValue = Instance.new("BoolValue", savingBoolStatsFolder)
+		UserBoolValue.Name = boolValue.Name
+		UserBoolValue.Value = getDataFromDataStore(boolValue.Name, user) or boolValue.Value
+	end
+	
+	-- Create folder for user no bool stats
+	local savingNonBoolStatsFolder = Instance.new("Folder", user)
+	savingNonBoolStatsFolder.Name = "savingnonboolstats"
+	
+	-- Get all non bool values from user datastore
+	for i, Infovalue in pairs(ReplicatedStorage.savingnonboolstats:GetChildren()) do
+		
+		local UserNonBoolValue = Instance.new("NumberValue", savingNonBoolStatsFolder)
+		UserNonBoolValue.Name = Infovalue.Name
+		UserNonBoolValue.Value = getDataFromDataStore(Infovalue.Name, user) or Infovalue.Value
+	end
+
+	-- Load information
+	loadInUser(user)
+
+	-- Award join badge to user
+	awardBadge(user, "joinBadge")
+	
+	-- Load user's inital pickaxe
+	loadpickaxe(user, false)
+	
+	-- Character added function
 	user.CharacterAdded:Connect(function(character)
+		
+		-- Load user pickaxe
+		loadpickaxe(user, false)
+		
 		character:WaitForChild("Humanoid").Died:Connect(function()		
 
 			if character:FindFirstChild("HumanoidRootPart") then
@@ -730,10 +976,7 @@ playerService.PlayerAdded:Connect(function(user)
 					
 					character.PlayerBackPack:Destroy()
 				end
-
-				-- Generate orignal pickaxe
-				loadpickaxe(user, "orignal")
-
+				
 				-- Generate new backpack
 				local number = user.savingnonboolstats.backpacknumber.Value
 				local clone = BackpackFolder["back"..number]:Clone()
@@ -743,60 +986,75 @@ playerService.PlayerAdded:Connect(function(user)
 				-- Clear user backpack
 				user.stats.TotalBackPackinput.Value = 0
 			end
-			
 		end)
 	end)
+end)
 
+-- User leave function
+PlayerService.PlayerRemoving:Connect(function(user)
+	
+	-- Save user money
+	setDataToDataStore("Money", user, user.leaderstats.Money.Value, false)
+
+	-- If user is loaded in
+	if user:FindFirstChild("savingnonboolstats") then
+
+		-- Save non bool stats
+		for i, userValue in pairs(ReplicatedStorage.savingnonboolstats:GetChildren()) do
+			
+			setDataToDataStore(userValue.Name, user, user.savingnonboolstats[userValue.Name].Value, true)
+		end
+	end
 end)
 
 -- Open backpack shop button 1 gui
-game.Workspace.Shop1.OpenShop1.Touched:Connect(function(hit)
+workspace.Shop1.OpenShop1.Touched:Connect(function(hit)
 	if hit.Parent:FindFirstChild("Humanoid") then
-		if game.Players:FindFirstChild(hit.Parent.Name) then
+		if PlayerService:FindFirstChild(hit.Parent.Name) then
 
-			triggerShopGuiEvent:FireClient(game.Players:GetPlayerFromCharacter(hit.Parent), 1, game.Workspace.Shop1)
+			TriggerShopGuiEvent:FireClient(PlayerService:GetPlayerFromCharacter(hit.Parent), 1, workspace.Shop1)
 		end
 	end 
 end)
 
 -- Open backpack shop button 2 gui
-game.Workspace.Shop1.OpenShop2.Touched:Connect(function(hit)
+workspace.Shop1.OpenShop2.Touched:Connect(function(hit)
 	if hit.Parent:FindFirstChild("Humanoid") then
-		if game.Players:FindFirstChild(hit.Parent.Name) then
+		if PlayerService:FindFirstChild(hit.Parent.Name) then
 
-			triggerShopGuiEvent:FireClient(game.Players:GetPlayerFromCharacter(hit.Parent), 1, game.Workspace.Shop1)
+			TriggerShopGuiEvent:FireClient(PlayerService:GetPlayerFromCharacter(hit.Parent), 1, workspace.Shop1)
 		end
 	end 
 end)
 
 
 -- Open pickaxe shop button 1 gui
-game.Workspace.Shop2.OpenShop1.Touched:Connect(function(hit)
+workspace.Shop2.OpenShop1.Touched:Connect(function(hit)
 	if hit.Parent:FindFirstChild("Humanoid") then
-		if game.Players:FindFirstChild(hit.Parent.Name) then
+		if PlayerService:FindFirstChild(hit.Parent.Name) then
 			
-			triggerShopGuiEvent:FireClient(game.Players:GetPlayerFromCharacter(hit.Parent), 2, game.Workspace.Shop2)
+			TriggerShopGuiEvent:FireClient(PlayerService:GetPlayerFromCharacter(hit.Parent), 2, workspace.Shop2)
 		end
 	end 
 end)
 
 -- Open pickaxe shop button 2 gui
-game.Workspace.Shop2.OpenShop2.Touched:Connect(function(hit)
+workspace.Shop2.OpenShop2.Touched:Connect(function(hit)
 	if hit.Parent:FindFirstChild("Humanoid") then
-		if game.Players:FindFirstChild(hit.Parent.Name) then
+		if PlayerService:FindFirstChild(hit.Parent.Name) then
 
-			triggerShopGuiEvent:FireClient(game.Players:GetPlayerFromCharacter(hit.Parent), 2, game.Workspace.Shop2)
+			TriggerShopGuiEvent:FireClient(PlayerService:GetPlayerFromCharacter(hit.Parent), 2, workspace.Shop2)
 		end
 	end 
 end)
 
 
 -- Open create pickaxe menu gui
-game.Workspace.SpecialShop.OpenShop.Touched:Connect(function(hit)
+workspace.SpecialShop.OpenShop.Touched:Connect(function(hit)
 	if hit.Parent:FindFirstChild("Humanoid") then
-		if game.Players:FindFirstChild(hit.Parent.Name) then
+		if PlayerService:FindFirstChild(hit.Parent.Name) then
 			
-			openCustomePickaxeGuiEvent:FireClient(game.Players:GetPlayerFromCharacter(hit.Parent))
+			OpenCustomePickaxeGuiEvent:FireClient(PlayerService:GetPlayerFromCharacter(hit.Parent))
 		end 
 	end 
 end)
@@ -804,5 +1062,25 @@ end)
 -- Open quest menu gui
 ProximityPromptService.PromptTriggered:Connect(function(promptObject, user)
 	
-	openQuestGuiEvent:FireClient(user, promptObject)
+	OpenQuestGuiEvent:FireClient(user, promptObject)
+end)
+
+-- Create new spawn function to handle infinity loop for saving user data
+task.spawn(function()
+	while true do
+		
+		-- Delay loop
+		task.wait(120)
+		for i, user in pairs(game.Players:GetChildren()) do
+
+			-- Save user money
+			setDataToDataStore("Money", user, user.leaderstats.Money.Value, false)
+
+			-- Save non bool stats
+			for i, InfoValue in pairs(ReplicatedStorage.savingnonboolstats:GetChildren()) do
+
+				setDataToDataStore(InfoValue.Name, user, user.savingnonboolstats[InfoValue.Name].Value, false)
+			end
+		end
+	end
 end)
