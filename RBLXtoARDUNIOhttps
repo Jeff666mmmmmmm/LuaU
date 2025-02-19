@@ -1,0 +1,131 @@
+------
+
+local HttpService = game:GetService("HttpService")
+
+
+local CLIENT_ID = "XXX"  -- Replace with your actual Client ID
+local CLIENT_SECRET = "XXX"  -- Replace with your actual Client Secret
+local THING_ID  = "XXX"  -- Replace with your actual Thing ID
+local DEVICE_ID = "XXX" -- Replace with device id
+local PROPERTY_ID = "XXX"  -- Replace with your actual Property ID
+
+-- Function to get OAuth Token from Arduino IoT Cloud
+local function getOAuthToken()
+	local url = "https://api2.arduino.cc/iot/v1/clients/token"
+
+	local body = "grant_type=client_credentials" ..
+		"&client_id=" .. CLIENT_ID ..
+		"&client_secret=" .. CLIENT_SECRET ..
+		"&audience=https://api2.arduino.cc/iot"
+
+	local headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = url,
+			Method = "POST",
+			Headers = headers,
+			Body = body
+		})
+	end)
+
+	if success and response.StatusCode == 200 then
+		local data = HttpService:JSONDecode(response.Body)
+		return data["access_token"]
+	else
+		warn("Failed to get OAuth token: " .. response.Body)
+		return nil
+	end
+end
+
+-- Function to read a value from an Arduino IoT Cloud property
+local function readFromArduinoCloud()
+	local token = getOAuthToken()
+	if not token then
+		warn("No valid OAuth token!")
+		return
+	end
+
+	local API_URL = "https://api2.arduino.cc/iot/v2/things/" .. THING_ID .. "/properties/" .. PROPERTY_ID
+
+	local headers = {
+		["Authorization"] = "Bearer " .. token
+	}
+
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = API_URL,
+			Method = "GET",  -- Use GET to retrieve a property value
+			Headers = headers
+		})
+	end)
+
+	if success and response.StatusCode == 200 then
+		local data = HttpService:JSONDecode(response.Body)
+		return data["last_value"]
+	else
+		warn("Failed to retrieve property value: " .. response.Body)
+		return nil
+	end
+end
+
+-- Example: Reading a value from Arduino IoT Cloud
+local propertyValue = readFromArduinoCloud()
+if propertyValue then
+	print("Retrieved Value: " .. propertyValue)
+end
+
+local function sendToArduino(varName, varId, varType, varPremission, updateStrategy, varValue)
+	local token = getOAuthToken()
+	if not token then
+		warn("❌ No valid OAuth token!")
+		return
+	end
+
+	local apiUrl = "https://api2.arduino.cc/iot/v2/things/" .. THING_ID .. "/properties/" .. varId.. "/publish"
+
+	local headers = {
+		["Authorization"] = "Bearer " .. token,
+		["Content-Type"] = "application/json"
+	}
+
+	-- ✅ Updated payload with missing required attributes
+	local body = HttpService:JSONEncode({
+		value = varValue,
+		name = varName,
+		type = varType,
+		permission = varPremission,
+		update_strategy = updateStrategy
+	})
+
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = apiUrl,
+			Method = "PUT",
+			Headers = headers,
+			Body = body
+		})
+	end)
+
+	if success then
+		print("📨 Response Body: " .. response.Body)
+
+		if response.StatusCode == 200 then
+			print("✅ Data sent successfully!")
+		elseif response.StatusCode == 400 then
+			warn("🚨 Bad Request: Ensure all required attributes are included!")
+		elseif response.StatusCode == 401 then
+			warn("🚨 Unauthorized: Check if your OAuth token is valid!")
+		elseif response.StatusCode == 404 then
+			warn("🚨 Not Found: Check if your THING_ID or PROPERTY_ID is correct!")
+		elseif response.StatusCode == 405 then
+			warn("🚨 Method Not Allowed: Ensure you are using the correct HTTP method.")
+		else
+			warn("❌ Failed to send data: " .. response.Body)
+		end
+	else
+		warn("❌ HTTP Request failed.")
+	end
+end
+
+sendToArduino("message1", "XXX", "INT", "READ_WRITE", "ON_CHANGE", 1)
