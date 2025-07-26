@@ -1,0 +1,1356 @@
+-- ServerScriptService/PolygonGenerator.lua
+local PolygonGenerator = require(game.ServerScriptService.TruePolygonModuleScript)
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local eventToServer = ReplicatedStorage.remoteEventToServer
+
+local HttpService = game:GetService("HttpService")
+
+
+local CLIENT_ID = "tSWRxV5jRIrw0FeFo2yQJzz8qH1UKUMg"
+local CLIENT_SECRET = "7I8u9TjIFAG3kmVQY3gTNubIXcaDSlB8F449GkhVHudOcVI1OeXeV6glAte5QiTz"
+local THING_ID  = "a160e85f-ef98-4302-a052-bea6dae573a2"
+
+local messageToServerID = "32f3dddb-a198-4137-9d1d-5eda3803c2d5"
+local messageToServer = ""
+
+local messageToArdunioID = "b84ced63-a353-4e3e-a9fa-d83a95092f6e"
+local messageToArdunio = ""
+
+local lastMessageFromArdunioNumber = 0
+
+local colorMap = {
+	[0] = Color3.fromRGB(255, 0, 0), -- 0 → Red
+	[1] = Color3.fromRGB( 0,255, 0), -- 1 → Green
+	[2] = Color3.fromRGB( 0, 0, 255), -- 2 → Blue
+	[3] = Color3.fromRGB(255,255, 0), -- 3 → Yellow
+	[4] = Color3.fromRGB(255, 0, 255), -- 4 → Magenta
+	[5] = Color3.fromRGB(0, 0, 0), -- 3 → Back
+	[6] = Color3.fromRGB(255, 255, 255), -- 4 → White
+}
+
+--––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
+-- Converts a list of {x,z} points into a flat list: {x1,z1,x2,z2,...}
+local function flatten(poly2d)
+	local out = {}
+	for _, pt in ipairs(poly2d) do
+		out[#out+1] = pt[1]
+		out[#out+1] = pt[2]
+	end
+	return out
+end
+
+-- Converts a flat {x1,z1,x2,z2,...} list into a list of {x,z} pairs
+local function unflatten(tab)
+	local out = {}
+	for i=1,#tab,2 do
+		out[#out+1] = { tab[i], tab[i+1] }
+	end
+	return out
+end
+
+-- Returns true if the point is inside the polygon (ray-casting algorithm)
+local function pointInPolygon(pt, poly)
+	local x,z,inside = pt[1], pt[2], false
+	for i=1,#poly do
+		local a,b = poly[i], poly[(i%#poly)+1]
+		if ((a[2]>z) ~= (b[2]>z))
+			and (x < (b[1]-a[1])*(z-a[2])/(b[2]-a[2]) + a[1])
+		then inside = not inside end
+	end
+	return inside
+end
+
+-- Gets an attribute or returns a fallback default; warns if missing
+local function getWithDefault(inst, attrName, default)
+	local v = inst:GetAttribute(attrName)
+	if v == nil then
+		warn(("⚠️ %q missing attribute %q; defaulting to %s"):format(
+			inst.Name, attrName, tostring(default)
+			))
+		return default
+	end
+	return v
+end
+
+-- Clear a folder, or create it if it doesn't exist
+local function clearFolder(name)
+	local f = workspace:FindFirstChild(name)
+	if f then
+		for _,c in ipairs(f:GetChildren()) do c:Destroy() end
+	else
+		f = Instance.new("Folder", workspace)
+		f.Name = name
+	end
+	return f
+end
+
+-- Gather & sort objects by Index descending
+local function gatherInitialObjects()
+	local folder = workspace:FindFirstChild("fillOjects")
+	if not folder then return {} end
+	local list = {}
+	for _, inst in ipairs(folder:GetChildren()) do
+		if not inst:IsA("BasePart") then continue end
+		local shape = "rectangle"
+		if inst.Shape == Enum.PartType.Cylinder then
+			shape = "circle"
+		elseif inst:IsA("WedgePart") or inst.Shape==Enum.PartType.Wedge then
+			shape = "triangle"
+		end
+		local sz = inst.Size
+		list[#list+1] = {
+			instance = inst,
+			shape = shape,
+			rawX = sz.X,
+			rawY = sz.Y,
+			rawZ = sz.Z,
+			colorId = getWithDefault(inst, "Color", 0),
+			index = getWithDefault(inst, "Index", 0),
+			edgeRows = getWithDefault(inst, "edgeRows", 0),
+			density = getWithDefault(inst, "Density", 0),
+		}
+	end
+	table.sort(list, function(a,b) return a.index > b.index end)
+	return list
+end
+
+-- SAT overlap & AABB‐touch helper
+local function getAxes(poly)
+	local axes = {}
+	for i=1,#poly do
+		local p1,p2 = poly[i], poly[(i%#poly)+1]
+		local dx,dz = p2[1]-p1[1], p2[2]-p1[2]
+		local nx,nz = -dz, dx
+		local len = math.sqrt(nx*nx + nz*nz)
+		axes[#axes+1] = { nx/len, nz/len }
+	end
+	return axes
+end
+
+-- Projects polygon points onto an axis and returns the min/max range (used in SAT overlap test)
+local function project(poly,axis)
+	local mn,mx
+	for _,pt in ipairs(poly) do
+		local d = pt[1]*axis[1] + pt[2]*axis[2]
+		mn = mn and math.min(mn,d) or d
+		mx = mx and math.max(mx,d) or d
+	end
+	return mn,mx
+end
+
+-- Do separating axis theorem test on two polygons in XY plane
+local function polygonsOverlap(a,b)
+	if #a==0 or #b==0 then return false end
+	for _,ax in ipairs(getAxes(a)) do
+		local mnA,mxA = project(a,ax)
+		local mnB,mxB = project(b,ax)
+		if mxA<mnB or mxB<mnA then return false end
+	end
+	for _,ax in ipairs(getAxes(b)) do
+		local mnA,mxA = project(a,ax)
+		local mnB,mxB = project(b,ax)
+		if mxA<mnB or mxB<mnA then return false end
+	end
+	return true
+end
+
+-- Return bounding box of a polygon
+local function getBBox(poly)
+	local minX,maxX = poly[1][1], poly[1][1]
+	local minZ,maxZ = poly[1][2], poly[1][2]
+	for _,p in ipairs(poly) do
+		minX,maxX = math.min(minX,p[1]), math.max(maxX,p[1])
+		minZ,maxZ = math.min(minZ,p[2]), math.max(maxZ,p[2])
+	end
+	return minX,maxX,minZ,maxZ
+end
+
+-- Do bounding boxes touch or overlap
+local function boxesTouch(aPoly,bPoly,dA,dB)
+	dA,dB = dA or 0, dB or 0
+	local minXA,maxXA,minZA,maxZA = getBBox(aPoly)
+	local minXB,maxXB,minZB,maxZB = getBBox(bPoly)
+	minXA,maxXA = minXA-dA, maxXA+dA
+	minZA,maxZA = minZA-dA, maxZA+dA
+	minXB,maxXB = minXB-dB, maxXB+dB
+	minZB,maxZB = minZB-dB, maxZB+dB
+	return not (maxXA<minXB or maxXB<minXA or maxZA<minZB or maxZB<minZA)
+end
+
+-- Compute the centroid of a 2D loop
+local function computeCentroid(loop)
+	local sx, sz = 0, 0
+	for _, pt in ipairs(loop) do
+		sx = sx + pt[1]
+		sz = sz + pt[2]
+	end
+	return { sx / #loop, sz / #loop }
+end
+
+-- Polygon area
+local function polygonArea(poly)
+	local a = 0
+	for i=1,#poly do
+		local x1,y1 = poly[i][1], poly[i][2]
+		local x2,y2 = poly[(i%#poly)+1][1], poly[(i%#poly)+1][2]
+		a = a + (x1*y2 - x2*y1)
+	end
+	return math.abs(a)*0.5
+end
+
+-- Convert base-36 string to decimal
+local function base36ToDecimal(input)
+	local chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+	local charMap = {}
+	for i = 1, #chars do
+		charMap[chars:sub(i, i)] = i - 1
+	end
+
+	input = input:lower()
+	local result = 0
+	for i = 1, #input do
+		local c = input:sub(i, i)
+		local value = charMap[c]
+		if value == nil then
+			error("Invalid character in base-36 string: " .. c)
+		end
+		result = result * 36 + value
+	end
+	return result
+end
+
+-- Convert decimal to base-36 with 5 characters
+local function decimalToBase36(number)
+	if number == 0 then return "00000" end
+	local chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+	local result = ""
+	while number > 0 do
+		local remainder = number % 36
+		result = chars:sub(remainder + 1, remainder + 1) .. result
+		number = math.floor(number / 36)
+	end
+	-- Pad with leading zeros to ensure 5 characters
+	while #result < 5 do
+		result = "0" .. result
+	end
+	return result
+end
+
+-- Build 2D outline from object
+local function getPolygon(obj)
+	local inst,pos3,yaw = obj.instance, obj.instance.CFrame.p, math.rad(obj.instance.Orientation.Y)
+	if obj.shape=="triangle" then yaw = yaw + math.pi end
+	local cf2 = CFrame.new(pos3)*CFrame.Angles(0,yaw,0)
+	local poly = {}
+
+	if obj.shape=="rectangle" then
+		local hx, hz = obj.rawX/2, obj.rawZ/2
+		for _,v in ipairs({
+			Vector3.new(-hx,0,-hz),
+			Vector3.new( hx,0,-hz),
+			Vector3.new( hx,0, hz),
+			Vector3.new(-hx,0, hz),
+			}) do
+			local wp = cf2 * v
+			poly[#poly+1] = { wp.X, wp.Z }
+		end
+
+	elseif obj.shape=="triangle" then
+		local b2,h2 = obj.rawY/2, obj.rawZ/2
+		for _,v in ipairs({
+			Vector3.new(-b2,0,-h2),
+			Vector3.new( b2,0,-h2),
+			Vector3.new(-b2,0, h2),
+			}) do
+			local wp = cf2 * v
+			poly[#poly+1] = { wp.X, wp.Z }
+		end
+
+	else -- circle
+		local r,segs = obj.rawY/2, 20
+		for i=0,segs-1 do
+			local th = 2*math.pi/segs*i
+			local wp = cf2 * Vector3.new(math.cos(th)*r,0,math.sin(th)*r)
+			poly[#poly+1] = { wp.X, wp.Z }
+		end
+	end
+
+	return poly
+end
+
+-- Carve away higher‐index overlaps; fully‐contained shapes become special “holes”
+local function carveFragments(objs)
+	local processed = {}
+
+	for _, obj in ipairs(objs) do
+		local base = getPolygon(obj)
+		local pieces = {{
+			outer = base,
+			holes = {},
+			colorId = obj.colorId,
+			density = obj.density,
+			index = obj.index,
+			instance = obj.instance,
+			edgeRows = obj.edgeRows,
+		}}
+
+		for _, prior in ipairs(processed) do
+			local nextPieces = {}
+
+			for _, frag in ipairs(pieces) do
+				if frag.colorId==prior.colorId
+					or frag.index >= prior.index
+					or not polygonsOverlap(frag.outer, prior.outer)
+				then
+					-- no interaction
+					table.insert(nextPieces, frag)
+
+				else
+					-- does prior fit entirely inside frag.outer?
+					local allInside = true
+					for _, vtx in ipairs(prior.outer) do
+						if not pointInPolygon(vtx, frag.outer) then
+							allInside = false
+							break
+						end
+					end
+
+					if allInside then
+						-- record it as a special hole, keep outer intact
+						table.insert(frag.holes, prior.outer)
+						table.insert(nextPieces, frag)
+
+					else
+						-- normal boolean carve
+						local diffs = PolygonGenerator(
+							flatten(frag.outer),
+							flatten(prior.outer),
+							"not"
+						)
+						if diffs and type(diffs[1])~="table" then diffs={diffs} end
+						for _, flat in ipairs(diffs or {}) do
+							table.insert(nextPieces, {
+								outer = unflatten(flat),
+								holes = {}, -- reset holes on split pieces
+								colorId = frag.colorId,
+								density = frag.density,
+								index = frag.index,
+								instance = frag.instance,
+								edgeRows = frag.edgeRows
+							})
+						end
+					end
+				end
+			end
+
+			pieces = nextPieces
+			if #pieces==0 then break end
+		end
+
+		for _, f in ipairs(pieces) do
+			table.insert(processed, f)
+		end
+	end
+
+	return processed
+end
+
+-- Merge Clusters
+local function unionLoops(loops)
+	local used, out = {}, {}
+	for i=1,#loops do used[i]=false end
+
+	for i=1,#loops do
+		if not used[i] then
+			-- BFS‐cluster any that touch or overlap
+			local queue, group = {i},{}
+			used[i] = true
+			while #queue>0 do
+				local idx = table.remove(queue,1)
+				group[#group+1] = loops[idx]
+				for j=1,#loops do
+					if not used[j]
+						and boxesTouch(loops[idx], loops[j])
+						and polygonsOverlap(loops[idx], loops[j])
+					then
+						used[j] = true
+						queue[#queue+1] = j
+					end
+				end
+			end
+			-- now boolean‐union this cluster
+			local flats = { flatten(group[1]) }
+			for k=2,#group do
+				local nextF = {}
+				for _,fA in ipairs(flats) do
+					local res = PolygonGenerator(fA,
+						flatten(group[k]),
+						"or")
+					if res and type(res[1])~="table" then res={res} end
+					for _,u in ipairs(res or {}) do
+						nextF[#nextF+1] = u
+					end
+				end
+				flats = nextF
+			end
+			for _,flat in ipairs(flats) do
+				out[#out+1] = unflatten(flat)
+			end
+		end
+	end
+
+	return out
+end
+
+-- Find voids in a poygon, and return a list of their borders
+local function detectVoids(initial)
+	local voids = {}
+
+	for i,obj in ipairs(initial) do
+		local outer = getPolygon(obj)
+		local inside = {}
+
+		-- gather all higher-index shapes completely inside `outer`
+		for j = 1, i-1 do
+			local hiPoly = getPolygon(initial[j])
+			local allIn = true
+			for _,pt in ipairs(hiPoly) do
+				if not pointInPolygon(pt, outer) then
+					allIn = false
+					break
+				end
+			end
+			if allIn then
+				-- clip that shape to `outer`
+				local diffs = PolygonGenerator(
+					flatten(outer),
+					flatten(hiPoly),
+					"and"
+				)
+				if diffs and type(diffs[1])~="table" then diffs={diffs} end
+				for _, flat in ipairs(diffs or {}) do
+					table.insert(inside, unflatten(flat))
+				end
+			end
+		end
+
+		-- now cluster & union those “inside” flats exactly like unionLoops
+		local merged = unionLoops(inside)
+		for _,loop in ipairs(merged) do
+			table.insert(voids, loop)
+		end
+	end
+
+	return voids
+end
+
+-- Cluster & union remaining outers, then UNION each shape’s holes
+local function clusterAndUnion(frags)
+	local byColor, final = {}, {}
+	for _, f in ipairs(frags) do
+		byColor[f.colorId] = byColor[f.colorId] or {}
+		table.insert(byColor[f.colorId], f)
+	end
+
+	for color, group in pairs(byColor) do
+		-- 1) cluster by overlap + density-touch
+		local visited, clusters = {}, {}
+		for i = 1, #group do visited[i] = false end
+
+		for i, f in ipairs(group) do
+			if not visited[i] then
+				local queue, cl = { i }, {}
+				visited[i] = true
+				while #queue > 0 do
+					local idx = table.remove(queue, 1)
+					table.insert(cl, group[idx])
+					for j, g in ipairs(group) do
+						if not visited[j]
+							and polygonsOverlap(group[idx].outer, g.outer)
+							and boxesTouch(
+								group[idx].outer, g.outer,
+								group[idx].density or 0,
+								g.density or 0
+							)
+						then
+							visited[j] = true
+							table.insert(queue, j)
+						end
+					end
+				end
+				table.insert(clusters, cl)
+			end
+		end
+
+		-- 2) for each cluster: warn on mismatched density/edgeRows, then union outers + holes
+		for _, cl in ipairs(clusters) do
+			-- pick a representative
+			local proto = cl[1]
+			local baseD = proto.density or 0
+			local baseER = proto.edgeRows or 0
+
+			-- warn if any frag differs
+			for _, frag in ipairs(cl) do
+				if frag.density ~= baseD
+					or frag.edgeRows ~= baseER
+				then
+					warn((
+						"⚠️ Cluster of color %d contains mismatched density/edgeRows:\n" ..
+							" %q → density=%s, edgeRows=%s\n" ..
+							" %q → density=%s, edgeRows=%s"
+						):format(
+							color,
+							proto.instance and proto.instance.Name or "<nil>",
+							baseD, baseER,
+							frag.instance and frag.instance.Name or "<nil>",
+							frag.density or 0, frag.edgeRows or 0
+						))
+					break
+				end
+			end
+
+			-- union all the cluster’s outer loops
+			local flats = { flatten(proto.outer) }
+			for k = 2, #cl do
+				local nextF = {}
+				for _, fA in ipairs(flats) do
+					local res = PolygonGenerator(fA,
+						flatten(cl[k].outer),
+						"or")
+					if res and type(res[1])~="table" then res={res} end
+					for _, u in ipairs(res or {}) do
+						table.insert(nextF, u)
+					end
+				end
+				flats = nextF
+			end
+
+			-- gather & union holes
+			local allHoles = {}
+			for _, frag in ipairs(cl) do
+				for _, hole in ipairs(frag.holes or {}) do
+					table.insert(allHoles, hole)
+				end
+			end
+			local mergedHoles = unionLoops(allHoles)
+
+			-- emit one final polygon per unioned outer
+			for _, flat in ipairs(flats) do
+				table.insert(final, {
+					instance = proto.instance,
+					colorId = proto.colorId,
+					outer = unflatten(flat),
+					holes = mergedHoles,
+					density = baseD,
+					edgeRows = baseER,
+				})
+			end
+		end
+	end
+
+	return final
+end
+
+-- Visualize the border of all polygons in a list
+local function visualizePolygons(finalList, yHeight)
+	yHeight = yHeight or 1
+	local folder = workspace:FindFirstChild("PolygonVisuals")
+	if folder then
+		for _,c in ipairs(folder:GetChildren()) do c:Destroy() end
+	else
+		folder = Instance.new("Folder", workspace)
+		folder.Name = "PolygonVisuals"
+	end
+
+	for _, entry in ipairs(finalList) do
+		-- 1) draw outer border in its color
+		local col = colorMap[entry.colorId] or Color3.new(1,1,1)
+		for i=1,#entry.outer do
+			local a,b = entry.outer[i], entry.outer[(i%#entry.outer)+1]
+			local A = Vector3.new(a[1], yHeight, a[2])
+			local B = Vector3.new(b[1], yHeight, b[2])
+			local p = Instance.new("Part", folder)
+			p.Size, p.Anchored, p.CanCollide, p.Transparency =
+				Vector3.new(0.2,0.2,0.2), true, false, 1
+			local att0 = Instance.new("Attachment", p); att0.WorldPosition = A
+			local att1 = Instance.new("Attachment", p); att1.WorldPosition = B
+			local beam = Instance.new("Beam", p)
+			beam.Attachment0, beam.Attachment1 = att0, att1
+			beam.FaceCamera = true
+			beam.Color = ColorSequence.new(col)
+			beam.Width0, beam.Width1 = 0.1, 0.1
+		end
+
+		-- 2) draw only black holes, inset slightly
+		for _, hole in ipairs(entry.holes or {}) do
+			for i=1,#hole do
+				local a,b = hole[i], hole[(i%#hole)+1]
+				local A = Vector3.new(a[1], yHeight - 0.1, a[2])
+				local B = Vector3.new(b[1], yHeight - 0.1, b[2])
+				local p = Instance.new("Part", folder)
+				p.Size, p.Anchored, p.CanCollide, p.Transparency =
+					Vector3.new(0.2,0.2,0.2), true, false, 1
+				local att0 = Instance.new("Attachment", p); att0.WorldPosition = A
+				local att1 = Instance.new("Attachment", p); att1.WorldPosition = B
+				local beam = Instance.new("Beam", p)
+				beam.Attachment0, beam.Attachment1 = att0, att1
+				beam.FaceCamera = true
+				beam.Color = ColorSequence.new(Color3.new(0,0,0))
+				beam.Width0, beam.Width1 = 0.1, 0.1
+			end
+		end
+	end
+end
+
+-- Visualize the edge loops of a set of polygons
+function visualizeEdgeLoops(polygons, yHeight)
+	-- clear out prior visuals
+	local folder = clearFolder("EdgeVisuals")
+	yHeight = yHeight or 1
+
+	for _, entry in ipairs(polygons) do
+		local col = colorMap[entry.colorId] or Color3.new(1,1,1)
+
+		-- each entry.edgeLoops[r] is assumed to be a single flat loop (list of {x,z})
+		for r, loop in ipairs(entry.edgeLoops or {}) do
+			local alpha = 1 - ((r-1) / #entry.edgeLoops)
+
+			for i = 1, #loop do
+				
+				if math.random(1,5) == 5 then
+				task.wait(0.03)
+				end
+				
+				local a = loop[i]
+				local b = loop[(i % #loop) + 1]
+
+				local A = Vector3.new(a[1], yHeight, a[2])
+				local B = Vector3.new(b[1], yHeight, b[2])
+
+				local p = Instance.new("Part", folder)
+				p.Size, p.Anchored, p.CanCollide, p.Transparency =
+					Vector3.new(0.2,0.2,0.2), true, false, 1 - alpha
+
+				local att0 = Instance.new("Attachment", p)
+				att0.WorldPosition = A
+				local att1 = Instance.new("Attachment", p)
+				att1.WorldPosition = B
+
+				local beam = Instance.new("Beam", p)
+				beam.Attachment0, beam.Attachment1 = att0, att1
+				beam.FaceCamera = true
+				beam.Color = ColorSequence.new(col)
+				beam.Width0, beam.Width1 = 0.1, 0.1
+			end
+		end
+	end
+end
+
+-- Visualize lines used to fill polygons
+local function visualizeFillLines(polygons, yHeight)
+	yHeight = yHeight or 1
+	local folder = clearFolder("FillVisuals")
+
+	for _, poly in ipairs(polygons) do
+		local col = colorMap[poly.colorId] or Color3.new(1,1,1)
+		for _, seg in ipairs(poly.fillLines or {}) do
+			local A = Vector3.new(seg.start.x, yHeight, seg.start.z)
+			local B = Vector3.new(seg["end"].x, yHeight, seg["end"].z)
+			local p = Instance.new("Part", folder)
+			p.Size, p.Anchored, p.CanCollide, p.Transparency =
+				Vector3.new(0.2,0.2,0.2), true, false, 0.5
+			local att0 = Instance.new("Attachment", p); att0.WorldPosition = A
+			local att1 = Instance.new("Attachment", p); att1.WorldPosition = B
+			local beam = Instance.new("Beam", p)
+			beam.Attachment0, beam.Attachment1 = att0, att1
+			beam.FaceCamera = true
+			beam.Color     = ColorSequence.new(col)
+			beam.Width0, beam.Width1 = 0.05, 0.05
+		end
+	end
+end
+
+-- Compute signed area (positive if CCW)
+local function signedArea(loop)
+	local a = 0
+	for i = 1, #loop do
+		local x1,y1 = loop[i][1], loop[i][2]
+		local x2,y2 = loop[(i%#loop)+1][1], loop[(i%#loop)+1][2]
+		a = a + (x1*y2 - x2*y1)
+	end
+	return a * 0.5
+end
+
+-- Ensure a loop is wound counter-clockwise
+local function ensureCCW(loop)
+	if signedArea(loop) < 0 then
+		local rev = {}
+		for i = #loop, 1, -1 do
+			rev[#rev+1] = loop[i]
+		end
+		return rev
+	end
+	return loop
+end
+
+-- Normalize a 2D vector, returns two numbers
+local function norm(vx, vz)
+	local L = math.sqrt(vx*vx + vz*vz)
+	if L > 0 then
+		return vx / L, vz / L
+	else
+		return 0, 0
+	end
+end
+
+-- Offset a loop of points by a given distance
+local function offsetLoop(loop, dist)
+	loop = ensureCCW(loop)
+	local n = #loop
+	if n < 3 then return nil end
+
+	local inset = {}
+	for i = 1, n do
+		local prev = loop[(i-2) % n + 1]
+		local curr = loop[i]
+		local next = loop[ i % n + 1 ]
+
+		-- compute inward normals on the two edges meeting at 'curr'
+		local e1x, e1z = curr[1]-prev[1], curr[2]-prev[2]
+		local n1x, n1z = -e1z, e1x
+		n1x, n1z = norm(n1x, n1z)
+
+		local e2x, e2z = next[1]-curr[1], next[2]-curr[2]
+		local n2x, n2z = -e2z, e2x
+		n2x, n2z = norm(n2x, n2z)
+
+		-- average those two inward normals, renormalize
+		local ax, az = (n1x + n2x)/2, (n1z + n2z)/2
+		ax, az = norm(ax, az)
+
+		-- move the vertex inward by 'dist'
+		inset[#inset+1] = {
+			curr[1] + ax * dist,
+			curr[2] + az * dist,
+		}
+	end
+
+	-- if it collapsed to zero area, give up
+	if polygonArea(inset) <= 1e-6 then
+		return nil
+	end
+
+	return inset
+end
+
+-- Remove nearly-colinear points
+local function simplifyLoop(loop)
+	local n, out = #loop, {}
+	for i=1,n do
+		local a = loop[(i-2)%n+1]
+		local b = loop[i]
+		local c = loop[i%n+1]
+		local ux, uz = b[1]-a[1], b[2]-a[2]
+		local vx, vz = c[1]-b[1], c[2]-b[2]
+		local dot = ux*vx + uz*vz
+		local mag = math.sqrt((ux*ux+uz*uz)*(vx*vx+vz*vz))
+		if mag==0 or (dot/mag) < 0.995 then
+			out[#out+1] = b
+		end
+	end
+	return out
+end
+
+-- Remove Invalid points
+local function pruneLoop(loop, origOuter, holes)
+	local out = {}
+	for _, pt in ipairs(loop) do
+		-- must still be inside the main outline
+		if pointInPolygon(pt, origOuter) then
+			-- and must NOT lie inside any hole
+			local bad = false
+			for _, h in ipairs(holes or {}) do
+				if pointInPolygon(pt, h) then
+					bad = true
+					break
+				end
+			end
+			if not bad then
+				out[#out+1] = pt
+			end
+		end
+	end
+	return #out >= 3 and out or nil
+end
+
+-- 
+local function pruneSegments(loop, maxLen)
+	local out, n = {}, #loop
+	for i=1,n do
+		local a = loop[i]
+		local b = loop[(i % n) + 1]
+		local dx, dz = b[1]-a[1], b[2]-a[2]
+		if math.sqrt(dx*dx + dz*dz) <= maxLen then
+			out[#out+1] = a
+		end
+	end
+	return #out>=3 and out or nil
+end
+
+-- Walk the closed loop, carve out contiguous valid runs
+local function splitValidSegments(loop, origOuter, holes)
+	local segments, curr = {}, {}
+	local function isValid(pt)
+		if not pointInPolygon(pt, origOuter) then return false end
+		for _, h in ipairs(holes or {}) do
+			if pointInPolygon(pt, h) then return false end
+		end
+		return true
+	end
+
+	for i = 1, #loop do
+		local pt = loop[i]
+		if isValid(pt) then
+			curr[#curr+1] = pt
+		else
+			if #curr >= 3 then
+				segments[#segments+1] = curr
+			end
+			curr = {}
+		end
+	end
+
+	-- wraparound: if first & last were valid, stitch them together
+	if #curr >= 3 then
+		if #segments > 0 and isValid(loop[1]) and isValid(loop[#loop]) then
+			-- merge tail into head
+			for _, p in ipairs(curr) do
+				table.insert(segments[1], p)
+			end
+		else
+			segments[#segments+1] = curr
+		end
+	end
+
+	return segments
+end
+
+-- build horizontal fill lines across the innermost inset ring
+local function splitFillLineAtZ(x1, x2, z, holes)
+	local intervals = { { x1, x2 } }
+
+	for _, hole in ipairs(holes) do
+		local xs = {}
+		for i = 1, #hole do
+			local A, B = hole[i], hole[(i % #hole) + 1]
+			local zA, zB = A[2], B[2]
+			if (zA < z and zB >= z) or (zB < z and zA >= z) then
+				local t = (z - zA) / (zB - zA)
+				xs[#xs+1] = A[1] + t * (B[1] - A[1])
+			end
+		end
+		table.sort(xs)
+
+		for i = 1, #xs, 2 do
+			local h1, h2 = xs[i], xs[i+1]
+			if not h2 then break end
+			for j = #intervals, 1, -1 do
+				local a,b = intervals[j][1], intervals[j][2]
+				if not (h2 <= a or h1 >= b) then
+					local pieces = {}
+					if h1 > a then pieces[#pieces+1] = { a, h1 } end
+					if h2 < b then pieces[#pieces+1] = { h2, b } end
+					table.remove(intervals, j)
+					for k = #pieces, 1, -1 do
+						table.insert(intervals, j, pieces[k])
+					end
+				end
+			end
+		end
+	end
+
+	return intervals
+end
+
+--Fill polygon with horizontal line segments avoidng holes
+local function mappingPolygonFill(finalList)
+	for _, poly in ipairs(finalList) do
+		poly.fillLines = {}
+
+		-- 1) pick the deepest edge-loop
+		local inner = (poly.edgeLoops or {})[#poly.edgeLoops]
+		if not inner then continue end
+
+		-- 2) compute X/Z bounds of that inner loop
+		local minX, maxX = inner[1][1], inner[1][1]
+		local minZ, maxZ = inner[1][2], inner[1][2]
+		for _, pt in ipairs(inner) do
+			minX = math.min(minX, pt[1])
+			maxX = math.max(maxX, pt[1])
+			minZ = math.min(minZ, pt[2])
+			maxZ = math.max(maxZ, pt[2])
+		end
+
+		local d = poly.density or 0
+		if d <= 0 then continue end
+
+		-- 3) inset top/bottom by d
+		local zTop    = maxZ - d
+		local zBottom = minZ + d
+
+		-- 4) scan horizontal lines
+		for z = zTop, zBottom, -d do
+			-- gather raw x‐hits on this scan
+			local xs = {}
+			for i = 1, #inner do
+				local A, B = inner[i], inner[(i % #inner) + 1]
+				local zA, zB = A[2], B[2]
+				if (zA < z and zB >= z) or (zB < z and zA >= z) then
+					local t = (z - zA) / (zB - zA)
+					xs[#xs+1] = A[1] + t * (B[1] - A[1])
+				end
+			end
+			table.sort(xs)
+
+			-- pair them and subtract holes
+			for i = 1, #xs-1, 2 do
+				local x1, x2 = xs[i], xs[i+1]
+				-- clamp inside the inset bounds
+				x1 = math.clamp(x1, minX + d, maxX - d)
+				x2 = math.clamp(x2, minX + d, maxX - d)
+				if x2 > x1 then
+					local safe = splitFillLineAtZ(x1, x2, z, poly.holes or {})
+					for _, iv in ipairs(safe) do
+						poly.fillLines[#poly.fillLines+1] = {
+							start = { x = iv[1], z = z },
+							["end"] = { x = iv[2], z = z },
+						}
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Computes & stores edgeLoops on each polygon
+local function mappingPolygonRoutes(finalList)
+	for _, poly in ipairs(finalList) do
+		poly.edgeLoops = {}
+		local orig  = poly.outer
+		local holes = poly.holes   or {}
+		local rows  = poly.edgeRows or 1
+		local d     = poly.density  or 0
+		local name  = poly.instance and poly.instance.Name or "<nil>"
+
+		-- row #1 is just the true border
+		poly.edgeLoops[1] = orig
+		local prev = orig
+
+		-- now inset rows 2..rows+1
+		for r = 2, rows+1 do
+			-- offset last inset inwards by d
+			local shrunk = offsetLoop(prev, d)
+			if not shrunk then
+				warn(("[%s] edgeRows: offsetLoop collapsed at row %d]"):format(name, r))
+				break
+			end
+
+			-- prune any verts outside main or inside a hole
+			local pruned = pruneLoop(shrunk, orig, holes)
+			if not pruned then
+				warn(("[%s] edgeRows: pruneLoop removed all points at row %d]"):format(name, r))
+				break
+			end
+
+			-- record as row r
+			poly.edgeLoops[r] = pruned
+			prev = pruned
+		end
+	end
+end
+
+-- Return the area of 2D points
+local function totalCoveredArea(polygons)
+	local total = 0
+	for _, poly in ipairs(polygons) do
+		-- area of the outer boundary
+		local outerA = polygonArea(poly.outer)
+		-- subtract out any hole areas
+		local holeA = 0
+		for _, hole in ipairs(poly.holes or {}) do
+			holeA = holeA + polygonArea(hole)
+		end
+		total = total + (outerA - holeA)
+	end
+	return total
+end
+
+-- Build polygons from the union of all the parts
+local function generatePolygons()
+	-- … your existing gather / carve / union / attach holes …
+	local frags     = carveFragments(gatherInitialObjects())
+	local finalList = clusterAndUnion(frags)
+
+	-- attach void-holes exactly as before…
+	local rawVoids   = detectVoids(gatherInitialObjects())
+	local holesByEntry = {}
+	for _, e in ipairs(finalList) do holesByEntry[e]={} end
+	for _, loop in ipairs(rawVoids) do
+		local c = computeCentroid(loop)
+		for _, e in ipairs(finalList) do
+			if pointInPolygon(c, e.outer) then
+				table.insert(holesByEntry[e], loop)
+				break
+			end
+		end
+	end
+	for _, e in ipairs(finalList) do
+		e.holes = unionLoops(holesByEntry[e] or {})
+	end
+
+	-- build edge-rows
+	mappingPolygonRoutes(finalList)
+	-- **then** build fill-lines
+	mappingPolygonFill(finalList)
+
+	return finalList
+end
+
+-- Generate gcode commands
+local function generateGCode(polygons)
+	local STEP_SIZE = 1
+	local parts = {}
+	local posX, posZ = 0, 0
+	local toolIsDown = false
+
+	local function emit(cmd)
+		table.insert(parts, cmd)
+	end
+
+	local function toolUp()
+		emit("Q")
+		toolIsDown = false
+	end
+
+	local function toolDown()
+		emit("R")
+		toolIsDown = true
+	end
+
+	local function multiStep(axis, deltaSteps, delayTenths)
+		local prefix = (axis == "x") and "I" or "J"
+		local dd = string.format("%02d", math.clamp(delayTenths, 0, 99))
+		local nn = string.format("%+03d", deltaSteps)
+		emit(prefix .. dd .. nn)
+	end
+
+	local function hopTo(x, z, alwaysLift, density, delayTenths)
+		local dx, dz = x - posX, z - posZ
+		local dist = math.sqrt(dx*dx + dz*dz)
+		if alwaysLift or dist > density then
+			if toolIsDown then toolUp() end
+		end
+
+		if dx ~= 0 then
+			multiStep("x", math.floor(dx / STEP_SIZE + 0.5), delayTenths)
+			posX = x
+		end
+		if dz ~= 0 then
+			multiStep("z", math.floor(dz / STEP_SIZE + 0.5), delayTenths)
+			posZ = z
+		end
+
+		if not toolIsDown then toolDown() end
+	end
+
+	emit("K") -- hold motors before starting
+
+	local byColor = {}
+	for _, poly in ipairs(polygons) do
+		byColor[poly.colorId] = byColor[poly.colorId] or {}
+		table.insert(byColor[poly.colorId], poly)
+	end
+
+	local colorIds = {}
+	for cid in pairs(byColor) do table.insert(colorIds, cid) end
+	table.sort(colorIds)
+
+	for ci, cid in ipairs(colorIds) do
+		local group = byColor[cid]
+		for _, poly in ipairs(group) do
+			local d = poly.density or 1
+			local delayTenths = math.clamp(math.floor(d * 10 + 0.5), 0, 99)
+
+			-- 1) Edge Loops (always lift between loops)
+			for _, loop in ipairs(poly.edgeLoops or {}) do
+				local a = loop[1]
+				hopTo(a[1], a[2], true, d, delayTenths)
+				for i = 1, #loop do
+					local b = loop[(i % #loop) + 1]
+					local dx, dz = b[1] - posX, b[2] - posZ
+					if dx ~= 0 then
+						multiStep("x", math.floor(dx / STEP_SIZE + 0.5), delayTenths)
+						posX = b[1]
+					end
+					if dz ~= 0 then
+						multiStep("z", math.floor(dz / STEP_SIZE + 0.5), delayTenths)
+						posZ = b[2]
+					end
+				end
+				toolUp()
+			end
+
+			-- 2) Fill Lines (stay down if short hops)
+			local lastX, lastZ = nil, nil
+			for _, seg in ipairs(poly.fillLines or {}) do
+				local a, b = seg.start, seg["end"]
+				local hopFromNewPoly = (lastX == nil)
+				hopTo(a.x, a.z, hopFromNewPoly, d, delayTenths)
+
+				local dx, dz = b.x - posX, b.z - posZ
+				if dx ~= 0 then
+					multiStep("x", math.floor(dx / STEP_SIZE + 0.5), delayTenths)
+					posX = b.x
+				end
+				if dz ~= 0 then
+					multiStep("z", math.floor(dz / STEP_SIZE + 0.5), delayTenths)
+					posZ = b.z
+				end
+
+				lastX, lastZ = posX, posZ
+			end
+
+			if toolIsDown then toolUp() end -- end of polygon
+		end
+		if ci < #colorIds then emit("C") end -- wait between colors
+	end
+
+	return table.concat(parts, ";") .. ";"
+end
+
+-- Chunk Gcode into payloads for transport for ardunio
+local function processGCodeForTransport(gCode)
+	
+	local chunkSize = 26
+	local result = {}
+	local dataChunks = {}
+
+	-- Split by semicolons, remove empty strings
+	for entry in string.gmatch(gCode, "[^;]+") do
+		if #entry > 0 then
+			table.insert(dataChunks, entry)
+		end
+	end
+
+	local currentChunk = ""
+	local chunkIndex = 0
+
+	for i, data in ipairs(dataChunks) do
+		-- Try to add ; + data (except if it's the first)
+		local separator = (currentChunk == "") and "" or ";"
+		local newData = separator .. data
+		if #currentChunk + #newData <= chunkSize then
+			currentChunk = currentChunk .. newData
+		else
+			-- Finalize current chunk
+			chunkIndex += 1
+			table.insert(result, decimalToBase36(chunkIndex) .. currentChunk)
+			-- Start new chunk with current data
+			currentChunk = data
+		end
+	end
+
+	-- Final leftover
+	if #currentChunk > 0 then
+		chunkIndex += 1
+		table.insert(result, decimalToBase36(chunkIndex) .. currentChunk)
+	end
+
+	return result
+end
+
+-- Get encoded client ID and secret
+local function getOAuthToken()
+	
+	local url = "https://api2.arduino.cc/iot/v1/clients/token"
+
+	local body = "grant_type=client_credentials" ..
+		"&client_id=" .. CLIENT_ID ..
+		"&client_secret=" .. CLIENT_SECRET ..
+		"&audience=https://api2.arduino.cc/iot"
+
+	local headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
+
+	-- Attempt to make the request
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = url,
+			Method = "POST",
+			Headers = headers,
+			Body = body
+		})
+	end)
+
+	-- Result 
+	if success and response.StatusCode == 200 then
+		local data = HttpService:JSONDecode(response.Body)
+		return data["access_token"]
+	else
+		warn("Failed to get OAuth token: " .. response.Body)
+		return nil
+	end
+end
+
+-- Function to read a value from an Arduino IoT Cloud property
+local function readFromArduinoCloud(varId)
+	
+	-- Get the OAuth token
+	local token = getOAuthToken()
+	if not token then
+		warn("No valid OAuth token!")
+		return
+	end
+
+	local API_URL = "https://api2.arduino.cc/iot/v2/things/" .. THING_ID .. "/properties/" .. varId
+
+	local headers = {
+		["Authorization"] = "Bearer " .. token
+	}
+
+    -- Attempt to make the request
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = API_URL,
+			Method = "GET",
+			Headers = headers
+		})
+	end)
+
+ 	-- Result
+	if success and response.StatusCode == 200 then
+		local data = HttpService:JSONDecode(response.Body)
+		return data["last_value"]
+	else
+		warn("Failed to retrieve property value: " .. response.Body)
+		return nil
+	end
+end
+
+-- Send data to the Arduino IoT Cloud
+local function sendToArduino(varName, varId, varType, varPremission, updateStrategy, varValue)
+	local token = getOAuthToken()
+	if not token then
+		warn("❌ No valid OAuth token!")
+		return
+	end
+
+-- Https request string
+	local apiUrl = "https://api2.arduino.cc/iot/v2/things/" .. THING_ID .. "/properties/" .. varId.. "/publish"
+
+	local headers = {
+		["Authorization"] = "Bearer " .. token,
+		["Content-Type"] = "application/json"
+	}
+
+	-- payload with required attributes
+	local body = HttpService:JSONEncode({
+		value = varValue,
+		name = varName,
+		type = varType,
+		permission = varPremission,
+		update_strategy = updateStrategy
+	})
+
+-- Attempt to send the HTTP request
+	local success, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = apiUrl,
+			Method = "PUT",
+			Headers = headers,
+			Body = body
+		})
+	end)
+
+-- Response handler
+	if success then
+		print("📨 Response Body: " .. response.Body)
+
+		if response.StatusCode == 200 then
+			-- Data sent successfully
+		elseif response.StatusCode == 400 then
+			warn("🚨 Bad Request: Ensure all required attributes are included!")
+		elseif response.StatusCode == 401 then
+			warn("🚨 Unauthorized: Check if your OAuth token is valid!")
+		elseif response.StatusCode == 404 then
+			warn("🚨 Not Found: Check if your THING_ID or PROPERTY_ID is correct!")
+		elseif response.StatusCode == 405 then
+			warn("🚨 Method Not Allowed: Ensure you are using the correct HTTP method.")
+		else
+			warn("❌ Failed to send data: " .. response.Body)
+		end
+	else
+		warn("❌ HTTP Request failed.")
+	end
+end
+
+-- Read data saved on cloud from ardunio
+local function readCloudMessage()
+	local uniqueMessageID = string.sub(messageToServer, 1, 5)
+
+	-- Check its at least 5 characters long
+	if #uniqueMessageID == 5 then
+		local IDNumber = base36ToDecimal(uniqueMessageID)
+
+		-- Ensure it is a new message
+		if IDNumber > lastMessageFromArdunioNumber then
+			
+			lastMessageFromArdunioNumber = IDNumber
+			local message = string.sub(messageToServer, 6)
+			
+			-- Ardunio requesting data
+			if string.sub(messageToServer, 1, 1) == "R" then
+				
+				local message = string.sub(messageToServer, 2)
+				
+				local requestingDataPayload = base36ToDecimal(message)
+				
+			end
+
+		end
+	end
+
+end
+
+local polys = generatePolygons()
+visualizePolygons(polys, 1)      -- borders + holes
+task.wait(4)
+visualizeEdgeLoops(polys, 1)  -- edge-rows
+task.wait(4)
+visualizeFillLines(polys, 1)       -- interior fill lines
+
+local code  = generateGCode(polys)
+
+local processedGCode = processGCodeForTransport(code)
+print(processedGCode)
+
+game.Workspace.infoScreen.SurfaceGui.Frame.totalPolygonCount.Text = ("Polygons: ".."")
+--game.Workspace.infoScreen.SurfaceGui.Frame.totalPathLines.Text = ("Paths: ".. tostring(summarizeLines(polys).count))
+--game.Workspace.infoScreen.SurfaceGui.Frame.totalPathDistance.Text = ("Total path distance: "..tostring(summarizeLines(polys).length))
+game.Workspace.infoScreen.SurfaceGui.Frame.totalPolygonSurface.Text = ("Area coverd "..math.round(totalCoveredArea(polys)).. "² Inches")
+
+-- Event trigger from cliet
+eventToServer.OnServerEvent:Connect(function(player, text, order)
+	if order == "command" then
+		sendToArduino("messageToArdunio", messageToArdunioID, "String", "READ_WRITE", "ON_CHANGE",  ("I"..text))
+	end
+
+end)
+
+-- Constant read server loop
+while true do
+	messageToServer = readFromArduinoCloud(messageToServerID)
+	readCloudMessage()
+	task.wait(2)
+end
