@@ -45,15 +45,27 @@ local mostRecentConfirmedExecutedCommand = "0000000"
 -- Motor constants
 -- Units & limits
 local STEPS_PER_INCH     = 127
-local INCHES_PER_STUD    = 1.5
+local INCHES_PER_STUD    = 1
 local STEPS_PER_STUD     = STEPS_PER_INCH * INCHES_PER_STUD  -- 190.5
 local MAX_TRAVEL_INCH    = 36
-local MAX_TRAVEL_STEPS   = math.floor(MAX_TRAVEL_INCH * STEPS_PER_INCH + 0.5)  -- 4572
+local MAX_TRAVEL_STEPS   = math.floor(MAX_TRAVEL_INCH * STEPS_PER_INCH)  -- 4572
 local MAX_TRAVEL_STUDS   = MAX_TRAVEL_INCH / INCHES_PER_STUD  -- 24 studs
 
-local MIN_DELAY_TENTHS = 2
+-- Motor timing (tenths of a millisecond)
+local MIN_DELAY_TENTHS = 20        -- 2.0 ms baseline
+local lastBaseDelayMs   = 2.0      -- keep tracking in ms, default 2.0
 
-local lastBaseDelayMs = 0.5
+-- ==== Multi-chunk bundling helpers ====
+local BUNDLE_MARK   = "$"    -- money symbol marks multi-chunk payloads
+local CHUNK_SEP     = "|"    -- separates chunks inside one bundled message
+local TARGET_BUNDLE_COUNT = 14
+-- Adjust this if your Arduino Cloud string property has a different max.
+-- 550 is a safe default for many setups: "S$" + 9 pipes + ~10*60 chars ≈ 611
+-- We'll back off if we exceed it.
+local MAX_IOT_BYTES = 1000
+
+
+--––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 
 -- Visual colors for fiber IDs
 local colorMap = {
@@ -97,15 +109,29 @@ local colorMap = {
 
 --––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 
--- Converts studs to steps for the Arduino motor
+-- Handshake state: keep sending I T<id62> every 5s until we see a ping back
+local waitingForPing = false
+local lastTInstantAtMs = 0
+local lastPayloadId62 = ""
 
-local function studsToSteps(studs)
-	return math.floor(studs * STEPS_PER_STUD + 0.5)
+local function nowMs() return tick() * 1000 end
+
+local function startTPingCycle(id62)
+	lastPayloadId62 = id62 or "00000"
+	waitingForPing = true
+	lastTInstantAtMs = 0 -- so it fires immediately on next loop tick
 end
 
 
+-- Converts studs to steps for the Arduino motor
+local function studsToSteps(studs)
+	return math.floor(studs * STEPS_PER_STUD)
+end
+
 -- helpers
-local function clamp(n, lo, hi) return math.max(lo, math.min(hi, n)) end
+local function clamp(n, lo, hi) 
+	return math.max(lo, math.min(hi, n)) 
+end
 
 local function clampWorldStuds(xStuds, zStuds)
 	return math.clamp(xStuds, 0, MAX_TRAVEL_STUDS), math.clamp(zStuds, 0, MAX_TRAVEL_STUDS)
@@ -197,6 +223,12 @@ local function coveredByAny(pt, fragments)
 	return false
 end
 
+local function msToTenths(ms)
+	ms = clamp(tonumber(ms) or 2.5, 0.2, 9.9)
+	return math.floor(ms * 10 + 0.5)
+end
+
+
 local function bboxDiagonal(loop)
 	local minX, maxX = loop[1][1], loop[1][1]
 	local minZ, maxZ = loop[1][2], loop[1][2]
@@ -222,6 +254,45 @@ local function getWithDefault(inst, attrName, default)
 		return default
 	end
 	return v
+end
+
+-- Converts a number (0–61) to one base62 character
+local function numToBase62(n)
+	local chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	n = math.clamp(math.floor(n or 0), 0, 61)
+	return string.sub(chars, n + 1, n + 1)
+end
+
+-- Converts a single base62 character to a number (0–61)
+local function base62ToNum(ch)
+	if not ch or #ch == 0 then return 0 end
+	local byte = string.byte(ch)
+	if byte >= 48 and byte <= 57 then return byte - 48 end          -- 0–9
+	if byte >= 65 and byte <= 90 then return 10 + (byte - 65) end   -- A–Z
+	if byte >= 97 and byte <= 122 then return 36 + (byte - 97) end  -- a–z
+	return 0
+end
+
+-- Pack 5 booleans into 1 base62 char (bit0–bit4)
+function packBooleansToBase62(b1, b2, b3, b4, b5)
+	local bits = 0
+	if b1 then bits = bit32.bor(bits, bit32.lshift(1, 0)) end
+	if b2 then bits = bit32.bor(bits, bit32.lshift(1, 1)) end
+	if b3 then bits = bit32.bor(bits, bit32.lshift(1, 2)) end
+	if b4 then bits = bit32.bor(bits, bit32.lshift(1, 3)) end
+	if b5 then bits = bit32.bor(bits, bit32.lshift(1, 4)) end
+	return numToBase62(bits)
+end
+
+-- Unpack 1 base62 char into 5 booleans
+function unpackBooleansFromBase62(ch)
+	local n = base62ToNum(ch)
+	local b1 = bit32.band(n, bit32.lshift(1, 0)) ~= 0
+	local b2 = bit32.band(n, bit32.lshift(1, 1)) ~= 0
+	local b3 = bit32.band(n, bit32.lshift(1, 2)) ~= 0
+	local b4 = bit32.band(n, bit32.lshift(1, 3)) ~= 0
+	local b5 = bit32.band(n, bit32.lshift(1, 4)) ~= 0
+	return b1, b2, b3, b4, b5
 end
 
 -- Clear a folder, or create it if it doesn't exist
@@ -260,6 +331,7 @@ local function gatherInitialObjects()
 			index = getWithDefault(inst, "Index", 0),
 			edgeRows = getWithDefault(inst, "edgeRows", 0),
 			density = getWithDefault(inst, "Density", 0),
+			motorSpeed = getWithDefault(inst, "MotorSpeed", 2.5),
 		}
 	end
 	table.sort(list, function(a,b) return a.index > b.index end)
@@ -350,11 +422,13 @@ local function polygonArea(poly)
 	return math.abs(a)*0.5
 end
 
--- toBase36(n, width) n: non-negative integer, width (optional): fixed number of chars; if nil -> minimal digits
-local function decimalToBase36(n, width)
+-- toBase62(n, width)
+-- n: non-negative integer
+-- width (optional): fixed number of chars; if nil/0 -> minimal digits
+local function decimalToBase62(n, width)
 	n = math.floor(tonumber(n) or 0)
 	if n < 0 then n = 0 end
-	local chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+	local chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 	-- Fast path for zero
 	if n == 0 then
@@ -368,9 +442,9 @@ local function decimalToBase36(n, width)
 	-- Build digits least-significant first
 	local out = {}
 	while n > 0 do
-		local r = n % 36
+		local r = n % 62
 		out[#out+1] = chars:sub(r + 1, r + 1)
-		n = math.floor(n / 36)
+		n = math.floor(n / 62)
 	end
 	local s = table.concat(out):reverse()
 
@@ -379,33 +453,35 @@ local function decimalToBase36(n, width)
 		if #s < width then
 			s = string.rep("0", width - #s) .. s
 		elseif #s > width then
-			-- Keep the least-significant 'width' digits
+			-- Keep least-significant 'width' digits
 			s = s:sub(#s - width + 1)
 		end
 	end
 	return s
 end
 
--- Convert base-36 string to decimal
-local function base36ToDecimal(input)
-	local chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+-- Convert base-62 string to decimal
+local function base62ToDecimal(input)
+	local chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	local charMap = {}
 	for i = 1, #chars do
 		charMap[chars:sub(i, i)] = i - 1
 	end
 
-	input = input:lower()
+	-- NOTE: base-62 is case-sensitive; do NOT alter case
 	local result = 0
 	for i = 1, #input do
 		local c = input:sub(i, i)
 		local value = charMap[c]
 		if value == nil then
-			error("Invalid character in base-36 string: " .. c)
+			warn("Invalid character in base-62 string: " .. c.." "..input)
+			value = 0
 		end
-		result = result * 36 + value
+		result = result * 62 + value
 	end
 	return result
 end
+
 
 -- Return the area of 2D points
 local function totalCoveredArea(polygons)
@@ -463,32 +539,41 @@ local function encodeSignPair(xSteps, zSteps)
 end
 
 
-local function absClampTo36k(n)
+local function absClampTo238k(n)
 	n = math.floor(math.abs(n) + 0.5)
-	if n > 46655 then n = 46655 end -- 36^3 - 1
+	if n > 238327 then n = 238327 end -- 62^3 - 1
 	return n
 end
 
+local function upOrDownDelayTenths(isDown, ms)
+	-- When tool is up → always 2.0 ms (i.e., 20 tenths)
+	if not isDown then return 20 end
+	return msToTenths(ms)
+end
+
+
 --––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 
--- Makes 0 encoded function
-local function makeO(baseDelayMs, xSteps, zSteps)
-	if xSteps == 0 and zSteps == 0 then return nil end
+-- ABSOLUTE parallel move encoder:
+-- O + [delay(2)] + ['0'] + [X_abs(base62,3)] + [Z_abs(base62,3)]
+local function makeOAbs(baseDelayMs, xAbsSteps, zAbsSteps)
+	if xAbsSteps == nil or zAbsSteps == nil then return nil end
 
-	-- keep using your tenths-of-ms convention, clamped
-	baseDelayMs = clamp(baseDelayMs or 0.2, 0.2, 9.9)
+	-- Clamp to your baseline (2.0–9.9 ms)
+	baseDelayMs = clamp(baseDelayMs or 2.0, 2.0, 9.9)
+
+	local xAbs = math.clamp(xAbsSteps, 0, MAX_TRAVEL_STEPS)
+	local zAbs = math.clamp(zAbsSteps, 0, MAX_TRAVEL_STEPS)
 
 	local payload =
 		"O" ..
 		twoDigitMs(baseDelayMs) ..
-		encodeSignPair(xSteps, zSteps) ..
-		decimalToBase36(absClampTo36k(xSteps), 3) ..
-		decimalToBase36(absClampTo36k(zSteps), 3)
+		"0" ..
+		decimalToBase62(absClampTo238k(xAbs), 3) ..
+		decimalToBase62(absClampTo238k(zAbs), 3)
 
-	if #payload ~= 10 then
-		warn(("Bad O length %d for payload '%s'"):format(#payload, payload))
-		return nil
-	end
+	-- 1 ('O') + 9 (info) = 10 chars total
+	if #payload ~= 10 then return nil end
 	return payload
 end
 
@@ -548,6 +633,7 @@ local function carveFragments(objs)
 			index = obj.index,
 			instance = obj.instance,
 			edgeRows = obj.edgeRows,
+			motorSpeed = obj.motorSpeed,
 		}}
 
 		for _, prior in ipairs(processed) do
@@ -592,7 +678,8 @@ local function carveFragments(objs)
 								density = frag.density,
 								index = frag.index,
 								instance = frag.instance,
-								edgeRows = frag.edgeRows
+								edgeRows = frag.edgeRows,
+								motorSpeed = frag.motorSpeed, 
 							})
 						end
 					end
@@ -822,6 +909,7 @@ local function clusterAndUnion(frags)
 			local proto = cl[1]
 			local baseD = proto.density or 0
 			local baseER = proto.edgeRows or 0
+			local baseMS = tonumber(proto.motorSpeed) or 2.5
 
 			-- warn if any frag differs
 			for _, frag in ipairs(cl) do
@@ -887,6 +975,7 @@ local function clusterAndUnion(frags)
 					holes = mergedHoles,
 					density = baseD,
 					edgeRows = baseER,
+					motorSpeed = baseMS,
 				})
 			end
 		end
@@ -1113,33 +1202,24 @@ local function splitFillLineAtZ(x1, x2, z, holes)
 	return intervals
 end
 
--- ==== Multi-chunk bundling helpers ====
-local BUNDLE_MARK   = "$"    -- money symbol marks multi-chunk payloads
-local CHUNK_SEP     = "|"    -- separates chunks inside one bundled message
-local TARGET_BUNDLE_COUNT = 10
--- Adjust this if your Arduino Cloud string property has a different max.
--- 550 is a safe default for many setups: "S$" + 9 pipes + ~10*60 chars ≈ 611
--- We'll back off if we exceed it.
-local MAX_IOT_BYTES = 550
-
-local function chunkIdOf(chunkStr) -- first 5 chars are base-36 ID
+local function chunkIdOf(chunkStr) -- first 5 chars are base-62 ID
 	return string.sub(chunkStr, 1, 5)
 end
 
-local function indexOfChunkById(chunks, base36Id)
+local function indexOfChunkById(chunks, base62Id)
 	for i, s in ipairs(chunks) do
-		if chunkIdOf(s) == base36Id then return i end
+		if chunkIdOf(s) == base62Id then return i end
 	end
 	return nil
 end
 
 -- Build a bundle "S$<chunk|chunk|...>" packing up to maxCount,
 -- but never exceeding maxBytes total.
-local function buildChunkBundle(chunks, startBase36Id, maxCount, maxBytes)
+local function buildChunkBundle(chunks, startBase62Id, maxCount, maxBytes)
 	maxCount = math.max(1, math.floor(maxCount or TARGET_BUNDLE_COUNT))
 	maxBytes = math.max(64, math.floor(maxBytes or MAX_IOT_BYTES))
 
-	local startIdx = indexOfChunkById(chunks, startBase36Id)
+	local startIdx = indexOfChunkById(chunks, startBase62Id)
 	if not startIdx then return nil, "start id not found" end
 
 	local picked = {}
@@ -1337,6 +1417,9 @@ local function generateGCode(polygons)
 	local parts = {}
 	local function emit(cmd) table.insert(parts, cmd) end
 	
+	local currentMs = 2.5  -- updated per polygon
+
+	
 	-- Only send when change >= this many degrees
 	local ANGLE_CHANGE_DEADBAND = 2
 	local lastAngleSent = nil
@@ -1352,12 +1435,12 @@ local function generateGCode(polygons)
 
 		-- deadband to avoid chatty P’s
 		if lastAngleSent == nil then
-			emit("P" .. decimalToBase36(absClampTo36k(a), 2))
+			emit("P" .. decimalToBase62(absClampTo238k(a), 2))
 			lastAngleSent = a
 		else
 			local delta = ((a - lastAngleSent + 540) % 360) - 180
 			if math.abs(delta) >= ANGLE_CHANGE_DEADBAND then
-				emit("P" .. decimalToBase36(absClampTo36k(a), 2))
+				emit("P" .. decimalToBase62(absClampTo238k(a), 2))
 				lastAngleSent = a
 			end
 		end
@@ -1368,12 +1451,14 @@ local function generateGCode(polygons)
 	local absXSteps, absZSteps = 0, 0 -- authoritative absolute step totals
 	
 	local function emitSnap()
-		local d = clamp(lastBaseDelayMs or 0.5, 0.2, 9.9)
+		-- If tool is up, snap at 2.0 ms; if down, snap at current polygon speed.
+		local dms = toolIsDown and clamp(currentMs, 0.2, 9.9) or 2.0
 		local xAbs = math.clamp(absXSteps, 0, MAX_TRAVEL_STEPS)
 		local zAbs = math.clamp(absZSteps, 0, MAX_TRAVEL_STEPS)
-		emit("L" .. twoDigitMs(d) .. decimalToBase36(xAbs, 4))
-		emit("M" .. twoDigitMs(d) .. decimalToBase36(zAbs, 4))
+		emit("L" .. twoDigitMs(dms) .. decimalToBase62(xAbs, 4))
+		emit("M" .. twoDigitMs(dms) .. decimalToBase62(zAbs, 4))
 	end
+
 
 
 	local function toolUp() 
@@ -1388,13 +1473,19 @@ local function generateGCode(polygons)
 		emitSnap()    
 	end
 
-	-- Emits a packed 'O' (relative steps) after computing delta from absolute targets
-	local function emitParallelMoveSteps(dxSteps, dzSteps, baseDelayMs)
-		if dxSteps == 0 and dzSteps == 0 then return end
+	-- Emits a packed 'O' (ABSOLUTE steps)
+	local function emitParallelMoveAbsSteps(xAbsSteps, zAbsSteps, baseDelayMs)
+		-- no-op if we're already there
+		if xAbsSteps == absXSteps and zAbsSteps == absZSteps then return end
 		baseDelayMs = clamp(math.floor((baseDelayMs or 0.2) * 10 + 0.5) / 10, 0.2, 9.9)
-		local cmd = makeO(baseDelayMs, dxSteps, dzSteps)
+
+		local cmd = makeOAbs(baseDelayMs, xAbsSteps, zAbsSteps)
 		if cmd then emit(cmd) end
+
+		-- track authoritative absolute positions
+		absXSteps, absZSteps = xAbsSteps, zAbsSteps
 	end
+
 	
 	-- Move to absolute world position (studs) by converting to absolute steps
 	local function emitMoveToWorldStuds(targetXStuds, targetZStuds, delayTenths)
@@ -1405,38 +1496,38 @@ local function generateGCode(polygons)
 		local targetXSteps = studsToSteps(targetXStuds)
 		local targetZSteps = studsToSteps(targetZStuds)
 
-		-- derive RELATIVE deltas from our authoritative abs step state
-		local dxSteps = targetXSteps - absXSteps
-		local dzSteps = targetZSteps - absZSteps
-
-		-- emit relative move that lands exactly on the absolute target
 		local baseDelayMs = clamp((delayTenths or MIN_DELAY_TENTHS) / 10, 0.2, 9.9)
 		lastBaseDelayMs = baseDelayMs
-		emitParallelMoveSteps(dxSteps, dzSteps, baseDelayMs)
 
-		-- commit authoritative absolute step positions
+		-- 🔵 ABSOLUTE O move
+		local cmd = makeOAbs(baseDelayMs, targetXSteps, targetZSteps)
+		if cmd then emit(cmd) end
+
+		-- Keep authoritative tracking aligned with targets
 		absXSteps, absZSteps = targetXSteps, targetZSteps
 	end
 
+	-- Studs-version (ABSOLUTE): converts target world studs -> absolute steps, emits O(abs)
+	local function emitParallelMoveStuds(targetXStuds, targetZStuds, baseDelayTenths)
+		-- clamp targets in world space
+		targetXStuds, targetZStuds = clampWorldStuds(targetXStuds, targetZStuds)
 
-	-- Studs-version: converts to steps/ms at emission time, then snaps with L/M
-	local function emitParallelMoveStuds(dxStuds, dzStuds, baseDelayTenths)
-		local dxSteps = studsToSteps(dxStuds)
-		local dzSteps = studsToSteps(dzStuds)
+		-- convert to ABSOLUTE steps
+		local xAbsSteps = studsToSteps(targetXStuds)
+		local zAbsSteps = studsToSteps(targetZStuds)
+
+		-- delay handling
 		local baseDelayMs = clamp((baseDelayTenths or MIN_DELAY_TENTHS) / 10, 0.2, 9.9)
-
-		-- track for later snaps (up/down/color-change)
 		lastBaseDelayMs = baseDelayMs
 
-		-- do the move
-		emitParallelMoveSteps(dxSteps, dzSteps, baseDelayMs)
+		-- 🔵 absolute O (uses makeOAbs under the hood)
+		emitParallelMoveAbsSteps(xAbsSteps, zAbsSteps, baseDelayMs)
 
-		-- update absolutes ONLY (no snaps here anymore)
-		absXSteps += dxSteps
-		absZSteps += dzSteps
+		-- track authoritative absolute positions
+		absXSteps, absZSteps = xAbsSteps, zAbsSteps
 	end
 
-	local function hopTo(xStuds, zStuds, alwaysLift, densityStuds, delayTenths)
+	local function hopTo(xStuds, zStuds, alwaysLift, densityStuds)
 		-- decide lift (unchanged)
 		local dx, dz = xStuds - posX, zStuds - posZ
 		local dist = math.sqrt(dx*dx + dz*dz)
@@ -1445,7 +1536,8 @@ local function generateGCode(polygons)
 
 		-- move in world coords (studs)
 		if dx ~= 0 or dz ~= 0 then
-			local moveDelayTenths = math.max(isLifted and MIN_DELAY_TENTHS or (delayTenths or MIN_DELAY_TENTHS), MIN_DELAY_TENTHS)
+			-- use 2.0 ms if tool up, otherwise polygon motorSpeed
+			local moveDelayTenths = upOrDownDelayTenths(toolIsDown, currentMs)
 			emitMoveToWorldStuds(xStuds, zStuds, moveDelayTenths)
 			posX, posZ = xStuds, zStuds
 		end
@@ -1470,18 +1562,21 @@ local function generateGCode(polygons)
 		local group = byColor[cid]
 		for _, poly in ipairs(group) do
 			local dStuds = poly.density or 1
-			local delayTenths = clamp(math.floor(dStuds * 10 + 0.5), 0, 99)
+			
+			currentMs = clamp(tonumber(poly.motorSpeed) or 2.5, 0.2, 9.9)
+
 
 			-- 1) Edge loops (always lift between loops)
 			for _, loop in ipairs(poly.edgeLoops or {}) do
 				local a = loop[1]
-				hopTo(a[1], a[2], true, dStuds, delayTenths)
+				hopTo(a[1], a[2], true, dStuds)
 
 				for i = 1, #loop do
 					local b = loop[(i % #loop) + 1]
 					-- EDGES (new)
 					emitHeadingToward(posX, posZ, b[1], b[2])       -- still using studs for angle math
-					emitMoveToWorldStuds(b[1], b[2], delayTenths)   -- world studs → abs steps (delta emitted)
+					emitMoveToWorldStuds(b[1], b[2], upOrDownDelayTenths(toolIsDown, currentMs))
+					-- world studs → abs steps (delta emitted)
 					posX, posZ = b[1], b[2]
 
 				end
@@ -1494,12 +1589,13 @@ local function generateGCode(polygons)
 			for _, seg in ipairs(poly.fillLines or {}) do
 				local a, b = seg.start, seg["end"]
 				local hopFromNewPoly = (lastX == nil)
-				hopTo(a.x, a.z, hopFromNewPoly, dStuds, delayTenths)
+				hopTo(a.x, a.z, hopFromNewPoly, dStuds)
 
 				-- 🔽 set heading along the print line (a->b)
 
 				emitHeadingToward(posX, posZ, b.x, b.z)
-				emitMoveToWorldStuds(b.x, b.z, delayTenths)
+				emitMoveToWorldStuds(b.x, b.z, upOrDownDelayTenths(toolIsDown, currentMs))
+
 				posX, posZ = b.x, b.z
 
 
@@ -1515,6 +1611,14 @@ local function generateGCode(polygons)
 			emitSnap()
 		end -- wait between colors
 	end
+	
+	if toolIsDown then
+		toolUp() 
+	end
+
+	-- Home motors, then disable motors
+	emit("Q")
+	emit("U")
 
 	return table.concat(parts, ";") .. ";"
 end
@@ -1545,7 +1649,7 @@ local function processGCodeForTransport(gCode)
 		else
 			-- Finalize current chunk
 			chunkIndex += 1
-			table.insert(result, decimalToBase36(chunkIndex, 5) .. currentChunk)
+			table.insert(result, decimalToBase62(chunkIndex, 5) .. currentChunk)
 			-- Start new chunk with current data
 			currentChunk = data
 		end
@@ -1554,7 +1658,7 @@ local function processGCodeForTransport(gCode)
 	-- Final leftover
 	if #currentChunk > 0 then
 		chunkIndex += 1
-		table.insert(result, decimalToBase36(chunkIndex, 5) .. currentChunk)
+		table.insert(result, decimalToBase62(chunkIndex, 5) .. currentChunk)
 	end
 
 	return result
@@ -1696,15 +1800,18 @@ local function readCloudMessage(processedGCode)
 
 	-- Check its at least 5 characters long
 	if #uniqueMessageID == 5 then
-		local IDNumber = base36ToDecimal(uniqueMessageID)
+		local IDNumber = base62ToDecimal(uniqueMessageID)
 
 		-- Ensure it is a new message
 		if IDNumber ~= lastMessageFromArduinoNumber then
 			
+			-- Delay https requests
+			task.wait(0.1)
+			
 			lastMessageFromArduinoNumber = IDNumber
 			local messageToServer = string.sub(messageToServer, 6)
 			
-			game.Workspace.infoScreen.SurfaceGui.Frame.infoID.Text = IDNumber
+			game.Workspace.infoScreen.SurfaceGui.Frame.infoID.Text = ("IN #"..IDNumber)
 			
 			-- Last command executed 7 digits 5-2
 			mostRecentConfirmedExecutedCommand = string.sub(messageToServer, -7)
@@ -1715,53 +1822,104 @@ local function readCloudMessage(processedGCode)
 			if string.sub(messageToServer, 1, 1) == "D" then
 				messageToServer = string.sub(messageToServer, 2)
 
-				-- Split the message into tokens
+				-- Split the message into tokens:
+				-- [1]=flags(1 b62 char), [2]=XLever, [3]=xPos(3 b62), [4]=xTot(4 b62),
+				-- [5]=ZLever, [6]=zPos(3 b62), [7]=zTot(4 b62),
+				-- [8]=RMag(dec), [9]=RRot(dec), [10]=rTot(4 b62),
+				-- [11]=lastExec(7 chars: 5+2 b62),
+				-- [12]=motorUp(3 b62, deciseconds), [13]=motorDown(3 b62, deciseconds)
 				local tokens = {}
 				for token in string.gmatch(messageToServer, "([^;]+)") do
 					table.insert(tokens, token)
 				end
 
-				local function b36(s) return base36ToDecimal(s or "0") end
+				-- Helpers
+				local function b62(s) return base62ToDecimal(s or "0") end
+				local function asBool(s) return (s or "0") ~= "0" end
 
-				local ArduinoErrorPaused             = tokens[1] ~= "0"
-				local ArduinoWaitPaused              = tokens[2] ~= "0"
-				local ArduinoXLeaverTriggerd         = tokens[3] ~= "0"
-				local ArduinoXStepPosition           = b36(tokens[4])
-				local ArduinoXStepTotal              = b36(tokens[5])
-				local ArduinoZLeaverTriggerd         = tokens[6] ~= "0"
-				local ArduinoZStepPosition           = b36(tokens[7])
-				local ArduinoZStepTotal              = b36(tokens[8])
-				local ArduinoRMagneticEncoderNumber  = tonumber(tokens[9])  or 0 -- decimal
-				local ArduinoRStepRotation           = tonumber(tokens[10]) or 0 -- decimal
-				local ArduinoRStepTotal              = b36(tokens[11])
-				local ArduinoMotorEnabled            = tokens[12] ~= "0"
-				local ArduinoFanEnabled              = tokens[13] ~= "0"
-				local mostRecentConfirmedExecutedCommand = tokens[14]
+				-- Base62 single-digit to number 0..61
+				local function b62digitToNum(c)
+					if not c or #c == 0 then return 0 end
+					c = string.sub(c, 1, 1)
+					local byte = string.byte(c)
+					if byte >= 48 and byte <= 57  then return byte - 48 end            -- '0'-'9' -> 0..9
+					if byte >= 65 and byte <= 90  then return 10 + (byte - 65) end     -- 'A'-'Z' -> 10..35
+					if byte >= 97 and byte <= 122 then return 36 + (byte - 97) end     -- 'a'-'z' -> 36..61
+					return 0
+				end
 
-				
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorXPos.Text = ArduinoXStepPosition
-				--game.Workspace.infoScreen.SurfaceGui.Frame.motorYPos.Text = ArduinoYStepPosition
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorZPos.Text = ArduinoZStepPosition
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorRPos.Text = ArduinoRStepRotation
-				
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorXStepCount.Text = ArduinoXStepTotal
-				--game.Workspace.infoScreen.SurfaceGui.Frame.motorYStepCount.Text = ArduinoYStepTotal
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorZStepCount.Text = ArduinoZStepTotal
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorRStepCount.Text = ArduinoRStepTotal
-				
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorXLeaver.Text = ArduinoXLeaverTriggerd and "Leaver Activated" or "Leaver Off"
-				--game.Workspace.infoScreen.SurfaceGui.Frame.motorZStepCount.Text = ArduinoXLeaverTriggerd and "Up Activated" or "Up Off"
-				--game.Workspace.infoScreen.SurfaceGui.Frame.motorZStepCount.Text = ArduinoXLeaverTriggerd and "Down Activated" or "Down Off"
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorZLeaver.Text = ArduinoZLeaverTriggerd and "Leaver Activated" or "Leaver Off"
-				game.Workspace.infoScreen.SurfaceGui.Frame.motorRSensor.Text = ArduinoRMagneticEncoderNumber
-				
-				game.Workspace.infoScreen.SurfaceGui.Frame.FansRunning.Text = ArduinoFanEnabled and "Fans Running" or "Fans Off"
-				game.Workspace.infoScreen.SurfaceGui.Frame.SteppersEngaged.Text = ArduinoMotorEnabled and "Steppers Engaged" or "Steppers Off"
+				-- Unpack 5 booleans from one base62 char
+				local function unpackFlags(ch)
+					local n = b62digitToNum(ch)
+					local b0 = bit32.band(n, bit32.lshift(1, 0)) ~= 0  -- scriptErrorPaused
+					local b1 = bit32.band(n, bit32.lshift(1, 1)) ~= 0  -- scriptWait
+					local b2 = bit32.band(n, bit32.lshift(1, 2)) ~= 0  -- scriptGCode
+					local b3 = bit32.band(n, bit32.lshift(1, 3)) ~= 0  -- motorEnabled
+					local b4 = bit32.band(n, bit32.lshift(1, 4)) ~= 0  -- fanEnabled
+					return b0, b1, b2, b3, b4
+				end
 
+				-- Parse flags (first token is exactly one base62 char)
+				local flagsChar = tokens[1] and string.sub(tokens[1], 1, 1) or "0"
+				local ArduinoErrorPaused, ArduinoWaitPaused, ArduinoScriptGCode, ArduinoMotorEnabled, ArduinoFanEnabled =
+					unpackFlags(flagsChar)
+
+				-- Shifted indices for the rest (compact format)
+				local ArduinoXLeaverTriggerd        = asBool(tokens[2])
+				local ArduinoXStepPosition          = b62(tokens[3])
+				local ArduinoXStepTotal             = b62(tokens[4])
+				local ArduinoZLeaverTriggerd        = asBool(tokens[5])
+				local ArduinoZStepPosition          = b62(tokens[6])
+				local ArduinoZStepTotal             = b62(tokens[7])
+				local ArduinoRMagneticEncoderNumber = tonumber(tokens[8])  or 0
+				local ArduinoRStepRotation          = tonumber(tokens[9])  or 0
+				local ArduinoRStepTotal             = b62(tokens[10])
+
+				-- NEW: uptime/downtime (deciseconds from base62 width-3)
+				local ArduinoMotorUpDS   = b62(tokens[11] or "0")  -- deciseconds
+				local ArduinoMotorDownDS = b62(tokens[12] or "0")  -- deciseconds
+				-- If you want seconds:
+				local ArduinoMotorUpSec   = ArduinoMotorUpDS / 10
+				local ArduinoMotorDownSec = ArduinoMotorDownDS / 10
+
+				-- UI updates
+				local frame = game.Workspace.infoScreen.SurfaceGui.Frame
+				frame.motorXPos.Text        = tostring(ArduinoXStepPosition)
+				frame.motorZPos.Text        = tostring(ArduinoZStepPosition)
+				frame.motorRPos.Text        = tostring(ArduinoRStepRotation)
+
+				frame.motorXStepCount.Text  = tostring(ArduinoXStepTotal)
+				frame.motorZStepCount.Text  = tostring(ArduinoZStepTotal)
+				frame.motorRStepCount.Text  = tostring(ArduinoRStepTotal)
+
+				frame.motorXLeaver.Text     = ArduinoXLeaverTriggerd and "Leaver Activated" or "Leaver Off"
+				frame.motorZLeaver.Text     = ArduinoZLeaverTriggerd and "Leaver Activated" or "Leaver Off"
+				frame.motorRSensor.Text     = tostring(ArduinoRMagneticEncoderNumber)
+
+				frame.FansRunning.Text      = ArduinoFanEnabled   and "Fans Running"     or "Fans Off"
+				frame.SteppersEngaged.Text  = ArduinoMotorEnabled and "Steppers Engaged" or "Steppers Off"
 				
-				game.Workspace.infoScreen.SurfaceGui.Frame.messageToServer.Text = messageToServer
-				return 
+				frame.scriptWaitPaused.Text = ArduinoWaitPaused and "Waiting Paused" or "Running Active"
+				frame.scriptErrorPaused.Text = ArduinoErrorPaused and "Error Stop" or "Running Smooth"
+				frame.scriptIdle.Text = ArduinoScriptGCode and "Gcode Compleated" or "Running Gcode"
+
+				frame.MotorUpTime.Text = string.format("Motor Up: %.1fs", ArduinoMotorUpSec)
+				frame.MotorDownTime.Text = string.format("Motor Down: %.1fs", ArduinoMotorDownSec)
+
+				-- Extract payload/command ids from the 7-char tail
+				local cmdStr       = tostring(mostRecentConfirmedExecutedCommand or "")
+				local payloadIdB62 = string.sub(cmdStr, 1, 5)
+				local cmdIdB62     = string.sub(cmdStr, -2)
+				local payloadIdDec = base62ToDecimal(payloadIdB62 or "0")
+				local cmdIdDec     = base62ToDecimal(cmdIdB62 or "0")
+
+				frame.lastExecutedPayloadID.Text = "PLOAD #" .. tostring(payloadIdDec)
+				frame.lastExecutedCommand.Text   = "CMD #" .. tostring(cmdIdDec)
+
+				frame.messageToServer.Text = messageToServer
+				return
 			end
+
 
 			-- Arduino sending imporntant data
 			if string.sub(messageToServer, 1, 1) == "I" then
@@ -1772,21 +1930,21 @@ local function readCloudMessage(processedGCode)
 
 				-- Arduino requesting data
 				if string.sub(messageToServer, 1, 1) == "R" then
-					local base36Id = string.sub(messageToServer, 2, 6)
+					local base62Id = string.sub(messageToServer, 2, 6)
 
 					-- Try to build a bundle starting at the requested chunk id.
 					local msg, kind = buildChunkBundle(
 						processedGCode,
-						base36Id,
-						TARGET_BUNDLE_COUNT, -- try for 10
-						MAX_IOT_BYTES        -- shrink if too large
+						base62Id,
+						TARGET_BUNDLE_COUNT,
+						MAX_IOT_BYTES
 					)
 
 					if not msg then
 						-- Fallback: search and send single chunk exactly like before
 						local single = nil
 						for _, chunk in ipairs(processedGCode) do
-							if string.sub(chunk, 1, 5) == base36Id then
+							if string.sub(chunk, 1, 5) == base62Id then
 								single = "S" .. chunk
 								break
 							end
@@ -1795,7 +1953,7 @@ local function readCloudMessage(processedGCode)
 							task.wait(0.3)
 							sendToArduino("messageToArduino", messageToArduinoID, "String", "READ_WRITE", "ON_CHANGE", single)
 						else
-							warn("Arduino requested invalid chunk id "..base36Id)
+							warn("Arduino requested invalid chunk id "..base62Id)
 						end
 						return
 					end
@@ -1805,7 +1963,6 @@ local function readCloudMessage(processedGCode)
 					sendToArduino("messageToArduino", messageToArduinoID, "String", "READ_WRITE", "ON_CHANGE", msg)
 					return
 				end
-
 				
 				if string.sub(imporntantMessage, 1, 1) == "E" then
 					imporntantMessage = string.sub(imporntantMessage, 2)
@@ -1822,6 +1979,7 @@ local function readCloudMessage(processedGCode)
 				if string.sub(imporntantMessage, 1, 1) == "P" then
 					imporntantMessage = string.sub(imporntantMessage, 2)
 					game.Workspace.infoScreen.SurfaceGui.Frame.imporntantMessage.Text = "Ping return "..imporntantMessage
+					waitingForPing = false
 					return
 				end
 				warn("Arduino send data (".. string.sub(messageToServer, 1, 1)..") ("..string.sub(messageToServer, 2)..") no processing occured")
@@ -1840,6 +1998,14 @@ visualizeFillLines(polys, 1) -- interior fill lines
 local code = generateGCode(polys)
 
 local processedGCode = processGCodeForTransport(code)
+
+-- Kick off the "repeat I T<id62> every 5s" cycle using the final payload's ID
+if #processedGCode > 0 then
+	local lastChunk = processedGCode[#processedGCode]
+	local id62 = string.sub(lastChunk, 1, 5)
+	startTPingCycle(id62)
+end
+
 print(processedGCode)
 
 game.Workspace.infoScreen.SurfaceGui.Frame.totalPolygonCount.Text = ("Polygons: ".."")
@@ -1859,26 +2025,44 @@ end)
 while true do
 	
 	-- Read cloud
-	if os.time() - lastArduinoCloudRead > 0.5 then
+	if os.time() - lastArduinoCloudRead > 0.44 then
 		lastArduinoCloudRead = os.time()
 		messageToServer = readFromArduinoCloud(messageToServerID)
 		readCloudMessage(processedGCode)
 	end
 	
 	-- Update connectivity info
-	if os.time() - lastDataIn > 10 then
+	if tick() * 1000 - lastDataIn > 12000 then
 		game.Workspace.infoScreen.SurfaceGui.Frame.scriptRunning.Text = "Communication Lost"
 	else
 		game.Workspace.infoScreen.SurfaceGui.Frame.scriptRunning.Text = "Connected"
 	end
 
 	-- Ping if havent sent info recently
-	if tick() * 1000 - lastDataOut > 25000 then
+	if tick() * 1000 - lastDataOut > 35000 then
 		task.wait(0.3)
 		sendToArduino("messageToArduino", messageToArduinoID, "String", "READ_WRITE", "ON_CHANGE", "IN")
 	end
 	
 	game.Workspace.infoScreen.SurfaceGui.Frame.secondsFromInbound.Text = math.round(tick() * 1000 - lastDataIn)/1000
 	game.Workspace.infoScreen.SurfaceGui.Frame.secondsFromOutbound.Text = math.round(tick() * 1000 - lastDataOut)/1000
+	
+	-- Re-send I T<id62> every 5 seconds until Arduino pings back
+	if waitingForPing then
+		local t = nowMs()
+		if t - lastTInstantAtMs >= 6000 then
+			-- I + T<id62> so Arduino treats it as an immediate 'T' command
+			sendToArduino(
+				"messageToArduino",
+				messageToArduinoID,
+				"String",
+				"READ_WRITE",
+				"ON_CHANGE",
+				"I" .. "T" .. lastPayloadId62
+			)
+			lastTInstantAtMs = t
+		end
+	end
+
 	task.wait(0.2)
 end
