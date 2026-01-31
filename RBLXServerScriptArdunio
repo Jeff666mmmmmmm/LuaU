@@ -1,9 +1,13 @@
 -- Polygon generation script
 local PolygonGenerator = require(game.ServerScriptService.TruePolygonModuleScript)
 
+-- Image generation script
+local ImageGenerator = require(game.ServerScriptService.ImageGenerationModule)
+
 -- Get the ReplicatedStorage service
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local eventToServer = ReplicatedStorage.remoteEventToServer
+local eventToClient = ReplicatedStorage.remoteEventToClient
 
 -- Get the HttpService
 local HttpService = game:GetService("HttpService")
@@ -11,16 +15,15 @@ local HttpService = game:GetService("HttpService")
 -- Get the MessagingService
 local CLIENT_ID = "tSWRxV5jRIrw0FeFo2yQJzz8qH1UKUMg"
 local CLIENT_SECRET = "7I8u9TjIFAG3kmVQY3gTNubIXcaDSlB8F449GkhVHudOcVI1OeXeV6glAte5QiTz"
-local THING_ID = "a160e85f-ef98-4302-a052-bea6dae573a2"
+local THING_ID = "65354776-75f9-41af-a050-0b19c01115f6"
 
 -- Message to server
-local messageToServerID = "32f3dddb-a198-4137-9d1d-5eda3803c2d5"
+local messageToServerID = "3e8579e0-4495-43f5-8352-61f367ac4ff4"
 local messageToServer = ""
 
 -- Message to arduino
 local messageToArduinoID = "b84ced63-a353-4e3e-a9fa-d83a95092f6e"
 local messageToArduino = ""
-local imporntantMessage = ""
 
 -- Arduino communication
 local lastMessageFromArduinoNumber = 0
@@ -29,21 +32,16 @@ local lastArduinoCloudRead = 0
 local lastDataOut = 0
 local lastDataIn = 0
 
--- Arduino side values
-local ArduinoErrorPaused = false
-local ArduinoWaitPaused = false
-local ArduinoXLeaverTriggerd = false
-local ArduinoXStepPosition = 0
-local ArduinoXStepTotal = 0
-local ArduinoZLeaverTriggerd = false
-local ArduinoZStepPosition = 0
-local ArduinoZStepTotal = 0
-local ArduinoMotorEnabled = false
-local ArduinoFanEnabled = false
+-- Recently executed command
 local mostRecentConfirmedExecutedCommand = "0000000"
 
--- Motor constants
--- Units & limits
+-- Start time of script
+local codeStartTime = tick() * 1000
+
+-- Define varible for Gcode
+local processedGCode = ""
+
+-- Motor constants Units & limits
 local STEPS_PER_INCH = 127
 local INCHES_PER_STUD = 1
 local STEPS_PER_STUD = STEPS_PER_INCH * INCHES_PER_STUD -- 190.5
@@ -51,17 +49,22 @@ local MAX_TRAVEL_INCH = 36
 local MAX_TRAVEL_STEPS = math.floor(MAX_TRAVEL_INCH * STEPS_PER_INCH) -- 4572
 local MAX_TRAVEL_STUDS = MAX_TRAVEL_INCH / INCHES_PER_STUD -- 24 studs
 
--- Motor timing (tenths of a millisecond)
-local MIN_DELAY_TENTHS = 20 -- 2.0 ms baseline
-local lastBaseDelayMs = 2.0 -- keep tracking in ms, default 2.0
+-- Minumium time delay
+local MIN_DELAY_TENTHS = 20
 
--- ==== Multi-chunk bundling helpers ====
-local BUNDLE_MARK = "$" -- money symbol marks multi-chunk payloads
-local CHUNK_SEP = "|" -- separates chunks inside one bundled message
+-- Last delay value
+local lastBaseDelayMs = 2.0
+
+-- Money symbol marks multi-chunk payloads
+local BUNDLE_MARK = "$"
+
+-- Seperator for splitting chunks inside one bundled message
+local CHUNK_SEP = "|" 
+
+-- Max chunks per bundle (14 is max for 1000 byte limit)
 local TARGET_BUNDLE_COUNT = 14
--- Adjust this if your Arduino Cloud string property has a different max.
--- 550 is a safe default for many setups: "S$" + 9 pipes + ~10*60 chars ≈ 611
--- We'll back off if we exceed it.
+
+-- Max bytes per chunk (bytes total, minus 1 byte for chunk ID)
 local MAX_IOT_BYTES = 1000
 
 --––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
@@ -109,7 +112,7 @@ local colorMap = {
 --–––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 
 -- Handshake state: keep sending I T<id62> every 5s until we see a ping back
-local waitingForPing = false
+local waitingForResponce = false
 local lastTInstantAtMs = 0
 local lastPayloadId62 = ""
 
@@ -140,7 +143,7 @@ end
 -- Start cycle for ping T command
 local function startTPingCycle(id62)
 	lastPayloadId62 = id62 or "00000"
-	waitingForPing = true
+	waitingForResponce = true
 	lastTInstantAtMs = 0 -- so it fires immediately on next loop tick
 end
 
@@ -154,6 +157,7 @@ local function clamp(n, lo, hi)
 	return math.max(lo, math.min(hi, n))
 end
 
+
 local function clampWorldStuds(xStuds, zStuds)
 	return math.clamp(xStuds, 0, MAX_TRAVEL_STUDS), math.clamp(zStuds, 0, MAX_TRAVEL_STUDS)
 end
@@ -165,6 +169,7 @@ local function twoDigitMs(ms) -- 0.0..9.9 -> "XY" where X=whole, Y=tenth
 	local tenth = math.floor((ms - whole) * 10 + 0.5)
 	return string.format("%d%d", whole, tenth) -- exactly 2 chars
 end
+
 
 local function packSteps5(steps) -- 4-digit magnitude + sign flag ('0' for +/0, '1' for -)
 	local sign = (steps < 0) and "1" or "0"
@@ -235,6 +240,7 @@ local function pointInPolygonInclusive(pt, poly)
 	return inside
 end
 
+
 local function coveredByAny(pt, fragments)
 	for _, f in ipairs(fragments) do
 		if pointInPolygonInclusive(pt, f.outer) then
@@ -243,6 +249,7 @@ local function coveredByAny(pt, fragments)
 	end
 	return false
 end
+
 
 local function msToTenths(ms)
 	ms = clamp(tonumber(ms) or 2.5, 0.2, 9.9)
@@ -264,12 +271,11 @@ local function bboxDiagonal(loop)
 	return math.sqrt(dx*dx + dz*dz)
 end
 
-
 -- Gets an attribute or returns a fallback default; warns if missing
 local function getWithDefault(inst, attrName, default)
 	local v = inst:GetAttribute(attrName)
 	if v == nil then
-		warn(("⚠️ %q missing attribute %q; defaulting to %s"):format(
+		warn(("! %q missing attribute %q; defaulting to %s"):format(
 			inst.Name, attrName, tostring(default)
 			))
 		return default
@@ -356,6 +362,7 @@ local function gatherInitialObjects()
 			chunkLength = getWithDefault(inst, "chunkLength", 1),
 			colorBlendFace = getWithDefault(inst, "ColorBlendFacing", "X"),
 			colorBlendPrecent = getWithDefault(inst, "ColorBlendPrecent", 100),
+			ColorBlendEdgeLines = getWithDefault(inst, "ColorBlendEdgeLines", true),
 			index = getWithDefault(inst, "Index", 0),
 			edgeRows = getWithDefault(inst, "edgeRows", 0),
 			density = getWithDefault(inst, "Density", 0),
@@ -365,6 +372,49 @@ local function gatherInitialObjects()
 	end
 	table.sort(list, function(a,b) return a.index > b.index end)
 	return list
+end
+
+-- ==== Numeric robustness / snapping ====
+local COORD_GRID = 1e-4  -- 0.0001 studs; tiny vs your machine scale
+local SAT_EPS    = 1e-5  -- epsilon for SAT & bbox tests
+local BOOLEAN_EPS  = 1e-3   -- how much to dilate before boolean union
+
+local function snapCoord(x)
+	-- snap to global grid to avoid 1.0000000002 vs 0.9999999998
+	return math.floor(x / COORD_GRID + 0.5) * COORD_GRID
+end
+
+local function regularizeLoop(loop)
+	if not loop or #loop < 3 then return loop end
+
+	local out = {}
+	local function same(p, q)
+		return math.abs(p[1] - q[1]) < COORD_GRID
+			and math.abs(p[2] - q[2]) < COORD_GRID
+	end
+
+	for i = 1, #loop do
+		local p = loop[i]
+		local px, pz = snapCoord(p[1]), snapCoord(p[2])
+		local snapped = { px, pz }
+
+		local prev = out[#out]
+		if not prev or not same(prev, snapped) then
+			out[#out+1] = snapped
+		end
+	end
+
+	-- drop duplicate last point if it wraps to the first
+	if #out >= 2 and same(out[1], out[#out]) then
+		table.remove(out, #out)
+	end
+
+	-- if we somehow collapsed it, just return original
+	if #out < 3 then
+		return loop
+	end
+
+	return out
 end
 
 -- SAT overlap & AABB‐touch helper
@@ -391,32 +441,78 @@ local function project(poly,axis)
 	return mn,mx
 end
 
--- Do separating axis theorem test on two polygons in XY plane
-local function polygonsOverlap(a,b)
-	if #a==0 or #b==0 then return false end
-	for _,ax in ipairs(getAxes(a)) do
-		local mnA,mxA = project(a,ax)
-		local mnB,mxB = project(b,ax)
-		if mxA<mnB or mxB<mnA then return false end
-	end
-	for _,ax in ipairs(getAxes(b)) do
-		local mnA,mxA = project(a,ax)
-		local mnB,mxB = project(b,ax)
-		if mxA<mnB or mxB<mnA then return false end
-	end
-	return true
-end
-
 -- Return bounding box of a polygon
 local function getBBox(poly)
 	local minX,maxX = poly[1][1], poly[1][1]
 	local minZ,maxZ = poly[1][2], poly[1][2]
+
 	for _,p in ipairs(poly) do
-		minX,maxX = math.min(minX,p[1]), math.max(maxX,p[1])
-		minZ,maxZ = math.min(minZ,p[2]), math.max(maxZ,p[2])
+		local x = p[1] :: number
+		local z = p[2] :: number
+
+		minX,maxX = math.min(minX,x), math.max(maxX,x)
+		minZ,maxZ = math.min(minZ,z), math.max(maxZ,z)
 	end
 	return minX,maxX,minZ,maxZ
 end
+
+-- Do separating axis theorem test on two polygons in XZ plane
+local function polygonsOverlap(a, b)
+	if #a == 0 or #b == 0 then
+		return false
+	end
+
+	-- Early AABB check to kill corner-only contact:
+	-- if both width and height of intersection are ~0, it's just a point.
+	local minXA, maxXA = a[1][1], a[1][1]
+	local minZA, maxZA = a[1][2], a[1][2]
+	for i = 2, #a do
+		local x, z = a[i][1], a[i][2]
+		if x < minXA then minXA = x end
+		if x > maxXA then maxXA = x end
+		if z < minZA then minZA = z end
+		if z > maxZA then maxZA = z end
+	end
+
+	local minXB, maxXB = b[1][1], b[1][1]
+	local minZB, maxZB = b[1][2], b[1][2]
+	for i = 2, #b do
+		local x, z = b[i][1], b[i][2]
+		if x < minXB then minXB = x end
+		if x > maxXB then maxXB = x end
+		if z < minZB then minZB = z end
+		if z > maxZB then maxZB = z end
+	end
+
+	local overlapW = math.min(maxXA, maxXB) - math.max(minXA, minXB)
+	local overlapH = math.min(maxZA, maxZB) - math.max(minZA, minZB)
+
+	-- Corner-only: both dims ~0 → treat as NO overlap.
+	-- Edge sharing: one dim ~0 but the other > 0 → keep as overlap.
+	if overlapW <= SAT_EPS and overlapH <= SAT_EPS then
+		return false
+	end
+
+	-- SAT proper (same as before, with small epsilon)
+	for _, ax in ipairs(getAxes(a)) do
+		local mnA, mxA = project(a, ax)
+		local mnB, mxB = project(b, ax)
+		if mxA < mnB - SAT_EPS or mxB < mnA - SAT_EPS then
+			return false
+		end
+	end
+
+	for _, ax in ipairs(getAxes(b)) do
+		local mnA, mxA = project(a, ax)
+		local mnB, mxB = project(b, ax)
+		if mxA < mnB - SAT_EPS or mxB < mnA - SAT_EPS then
+			return false
+		end
+	end
+
+	return true
+end
+
 
 -- Do bounding boxes touch or overlap
 local function boxesTouch(aPoly,bPoly,dA,dB)
@@ -427,7 +523,13 @@ local function boxesTouch(aPoly,bPoly,dA,dB)
 	minZA,maxZA = minZA-dA, maxZA+dA
 	minXB,maxXB = minXB-dB, maxXB+dB
 	minZB,maxZB = minZB-dB, maxZB+dB
-	return not (maxXA<minXB or maxXB<minXA or maxZA<minZB or maxZB<minZA)
+	return not (
+		maxXA < minXB - SAT_EPS or
+			maxXB < minXA - SAT_EPS or
+			maxZA < minZB - SAT_EPS or
+			maxZB < minZA - SAT_EPS
+	)
+
 end
 
 -- Compute the centroid of a 2D loop
@@ -490,7 +592,7 @@ local function decimalToBase62(n, width)
 end
 
 -- Convert base-62 string to decimal
-local function base62ToDecimal(input)
+local function base62ToDecimal(input : string)
 	local chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 	local charMap = {}
 	for i = 1, #chars do
@@ -574,12 +676,12 @@ local function absClampTo238k(n)
 	return n
 end
 
+
 local function upOrDownDelayTenths(isDown, ms)
 	-- When tool is up → always 2.0 ms (i.e., 20 tenths)
 	if not isDown then return 20 end
 	return msToTenths(ms)
 end
-
 
 --––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 
@@ -645,7 +747,7 @@ local function getPolygon(obj)
 		end
 	end
 
-	return poly
+	return ensureCCW(regularizeLoop(poly))
 end
 
 -- Carve away higher‐index overlaps; fully‐contained shapes become special “holes”
@@ -665,14 +767,14 @@ local function carveFragments(objs)
 			chunkLength = obj.chunkLength,
 			colorBlendFace = obj.colorBlendFace,
 			colorBlendPrecent = obj.colorBlendPrecent,
+			colorFillType = obj.ColorFillType,
+			ColorBlendEdgeLines = obj.ColorBlendEdgeLines,
 			density = obj.density,
 			index = obj.index,
 			instance = obj.instance,
 			edgeRows = obj.edgeRows,
 			motorSpeed = obj.motorSpeed,
-			colorFillType = obj.ColorFillType,
 		}}
-
 
 		for _, prior in ipairs(processed) do
 			local nextPieces = {}
@@ -689,11 +791,12 @@ local function carveFragments(objs)
 					-- does prior fit entirely inside frag.outer?
 					local allInside = true
 					for _, vtx in ipairs(prior.outer) do
-						if not pointInPolygon(vtx, frag.outer) then
+						if not pointInPolygonInclusive(vtx, frag.outer) then
 							allInside = false
 							break
 						end
 					end
+
 
 					if allInside then
 						-- record it as a special hole, keep outer intact
@@ -710,7 +813,7 @@ local function carveFragments(objs)
 						if diffs and type(diffs[1])~="table" then diffs={diffs} end
 						for _, flat in ipairs(diffs or {}) do
 							table.insert(nextPieces, {
-								outer = unflatten(flat),
+								outer = regularizeLoop(unflatten(flat)),
 								holes = {}, -- reset holes on split pieces
 								colorId = frag.colorId,
 								colorId2 = frag.colorId2,
@@ -720,6 +823,8 @@ local function carveFragments(objs)
 								chunkLength = frag.chunkLength,
 								colorBlendFace = frag.colorBlendFace,
 								colorBlendPrecent = frag.colorBlendPrecent,
+								colorFillType = frag.colorFillType,
+								ColorBlendEdgeLines = frag.ColorBlendEdgeLines,
 								density = frag.density,
 								index = frag.index,
 								instance = frag.instance,
@@ -782,7 +887,7 @@ local function unionLoops(loops)
 				flats = nextF
 			end
 			for _,flat in ipairs(flats) do
-				out[#out+1] = unflatten(flat)
+				out[#out+1] = regularizeLoop(unflatten(flat))
 			end
 		end
 	end
@@ -867,52 +972,115 @@ local function debugReportRingVoidsRobust(unionLoopsOut, clusterFragments, label
 	return count
 end
 
-
 -- Find voids in a poygon, and return a list of their borders
-local function detectVoids(initial)
+local function detectVoidsOnFinal(finalList)
 	local voids = {}
 
-	for i,obj in ipairs(initial) do
-		local outer = getPolygon(obj)
+	-- Build a list sorted by instance.Index (descending like initial did)
+	local entries = {}
+	for _, e in ipairs(finalList) do
+		entries[#entries+1] = e
+	end
+	table.sort(entries, function(a, b)
+		local ia = getWithDefault(a.instance, "Index", 0)
+		local ib = getWithDefault(b.instance, "Index", 0)
+		return ia > ib
+	end)
+
+	for i, obj in ipairs(entries) do
+		local outer = obj.outer
 		local inside = {}
 
 		-- gather all higher-index shapes completely inside `outer`
 		for j = 1, i-1 do
-			local hiPoly = getPolygon(initial[j])
-			local allIn = true
-			for _,pt in ipairs(hiPoly) do
-				if not pointInPolygon(pt, outer) then
-					allIn = false
-					break
+			local hi = entries[j]
+
+			-- IMPORTANT:
+			-- shapes of the SAME color should not create voids inside each other.
+			if hi.colorId ~= obj.colorId then
+				local hiPoly = hi.outer
+
+				local allIn = true
+				for _, pt in ipairs(hiPoly) do
+					if not pointInPolygon(pt, outer) then
+						allIn = false
+						break
+					end
 				end
-			end
-			if allIn then
-				-- clip that shape to `outer`
-				local diffs = PolygonGenerator(
-					flatten(outer),
-					flatten(hiPoly),
-					"and"
-				)
-				if diffs and type(diffs[1])~="table" then diffs={diffs} end
-				for _, flat in ipairs(diffs or {}) do
-					table.insert(inside, unflatten(flat))
+
+				if allIn then
+					-- clip that shape to `outer`
+					local diffs = PolygonGenerator(
+						flatten(outer),
+						flatten(hiPoly),
+						"and"
+					)
+					if diffs and type(diffs[1]) ~= "table" then
+						diffs = { diffs }
+					end
+					for _, flat in ipairs(diffs or {}) do
+						inside[#inside+1] = regularizeLoop(unflatten(flat))
+					end
 				end
 			end
 		end
 
-		-- now cluster & union those “inside” flats exactly like unionLoops
+
+		-- cluster & union those “inside” flats into void loops
 		local merged = unionLoops(inside)
-		for _,loop in ipairs(merged) do
-			table.insert(voids, loop)
+		for _, loop in ipairs(merged) do
+			voids[#voids+1] = loop
 		end
 	end
 
 	return voids
 end
 
+-- Offset a loop of points by a given distance
+local function offsetLoop(loop, dist)
+	loop = ensureCCW(loop)
+	local n = #loop
+	if n < 3 then return nil end
+
+	local inset = {}
+	for i = 1, n do
+		local prev = loop[(i-2) % n + 1]
+		local curr = loop[i]
+		local next = loop[ i % n + 1 ]
+
+		-- compute inward normals on the two edges meeting at 'curr'
+		local e1x, e1z = curr[1]-prev[1], curr[2]-prev[2]
+		local n1x, n1z = -e1z, e1x
+		n1x, n1z = norm(n1x, n1z)
+
+		local e2x, e2z = next[1]-curr[1], next[2]-curr[2]
+		local n2x, n2z = -e2z, e2x
+		n2x, n2z = norm(n2x, n2z)
+
+		-- average those two inward normals, renormalize
+		local ax, az = (n1x + n2x)/2, (n1z + n2z)/2
+		ax, az = norm(ax, az)
+
+		-- move the vertex inward by 'dist'
+		inset[#inset+1] = {
+			curr[1] + ax * dist,
+			curr[2] + az * dist,
+		}
+	end
+
+	-- if it collapsed to zero area, give up
+	if polygonArea(inset) <= 1e-6 then
+		return nil
+	end
+
+	return inset
+end
+
 -- Cluster & union remaining outers, then UNION each shape’s holes
 local function clusterAndUnion(frags)
 	local byColor, final = {}, {}
+
+	-- bucket by colorId
 	for _, f in ipairs(frags) do
 		byColor[f.colorId] = byColor[f.colorId] or {}
 		table.insert(byColor[f.colorId], f)
@@ -927,9 +1095,11 @@ local function clusterAndUnion(frags)
 			if not visited[i] then
 				local queue, cl = { i }, {}
 				visited[i] = true
+
 				while #queue > 0 do
 					local idx = table.remove(queue, 1)
 					table.insert(cl, group[idx])
+
 					for j, g in ipairs(group) do
 						if not visited[j]
 							and polygonsOverlap(group[idx].outer, g.outer)
@@ -944,6 +1114,7 @@ local function clusterAndUnion(frags)
 						end
 					end
 				end
+
 				table.insert(clusters, cl)
 			end
 		end
@@ -958,15 +1129,12 @@ local function clusterAndUnion(frags)
 
 			-- warn if any frag differs
 			for _, frag in ipairs(cl) do
-				if frag.density ~= baseD
-					or frag.edgeRows ~= baseER
-				then
-					warn((
-						"⚠️ Cluster of color %d contains mismatched density/edgeRows:\n" ..
-							" %q → density=%s, edgeRows=%s\n" ..
-							" %q → density=%s, edgeRows=%s"
+				if frag.density ~= baseD or frag.edgeRows ~= baseER then
+					warn(( "⚠️ Cluster of color %d contains mismatched density/edgeRows:\n" ..
+						" %q → density=%s, edgeRows=%s\n" ..
+						" %q → density=%s, edgeRows=%s"
 						):format(
-							color,
+							color :: string,
 							proto.instance and proto.instance.Name or "<nil>",
 							baseD, baseER,
 							frag.instance and frag.instance.Name or "<nil>",
@@ -976,33 +1144,38 @@ local function clusterAndUnion(frags)
 				end
 			end
 
-			-- union all the cluster’s outer loops
+			-- 2a) union all the cluster’s outer loops (no dilation)
 			local flats = { flatten(proto.outer) }
 			for k = 2, #cl do
 				local nextF = {}
+				local bFlat = flatten(cl[k].outer)
+
 				for _, fA in ipairs(flats) do
-					local res = PolygonGenerator(fA,
-						flatten(cl[k].outer),
-						"or")
-					if res and type(res[1])~="table" then res={res} end
+					local res = PolygonGenerator(fA, bFlat, "or")
+					if res and type(res[1]) ~= "table" then
+						res = { res }
+					end
 					for _, u in ipairs(res or {}) do
-						table.insert(nextF, u)
+						nextF[#nextF+1] = u
 					end
 				end
+
 				flats = nextF
 			end
 
+			-- 2b) regularize the unioned outers
 			local unionLoopsOut = {}
 			for _, flat in ipairs(flats) do
-				unionLoopsOut[#unionLoopsOut+1] = unflatten(flat)
+				local loop = regularizeLoop(unflatten(flat))
+				if loop and #loop >= 3 and polygonArea(loop) > 1e-6 then
+					unionLoopsOut[#unionLoopsOut+1] = loop
+				end
 			end
 
-			-- 🔎 Robust early diagnostic (prints only true ring-voids, filters slivers)
-			debugReportRingVoidsRobust(unionLoopsOut, cl, ("color=%d cluster"):format(color))
+			-- optional robust void debug
+			debugReportRingVoidsRobust(unionLoopsOut, cl, ("color=%d cluster"):format(color :: string))
 
-
-
-			-- gather & union holes
+			-- 2c) gather & union holes across cluster
 			local allHoles = {}
 			for _, frag in ipairs(cl) do
 				for _, hole in ipairs(frag.holes or {}) do
@@ -1011,31 +1184,34 @@ local function clusterAndUnion(frags)
 			end
 			local mergedHoles = unionLoops(allHoles)
 
-			-- emit one final polygon per unioned outer
-			for _, flat in ipairs(flats) do
+			-- 2d) emit one final polygon per unioned outer
+			for _, loop in ipairs(unionLoopsOut) do
 				table.insert(final, {
-					instance = proto.instance,
-					colorId = proto.colorId,
-					colorId2 = proto.colorId2,
-					colorId3 = proto.colorId3,
-					colorId4 = proto.colorId4,
-					colorsUsed = proto.colorsUsed,
-					chunkLength = proto.chunkLength,
-					colorBlendFace = proto.colorBlendFace,
+					instance        = proto.instance,
+					colorId         = proto.colorId,
+					colorId2        = proto.colorId2,
+					colorId3        = proto.colorId3,
+					colorId4        = proto.colorId4,
+					colorsUsed      = proto.colorsUsed,
+					chunkLength     = proto.chunkLength,
+					colorBlendFace  = proto.colorBlendFace,
 					colorBlendPrecent = proto.colorBlendPrecent,
-					outer = unflatten(flat),
-					holes = mergedHoles,
-					density = baseD,
-					edgeRows = baseER,
-					motorSpeed = baseMS,
-					colorFillType = proto.colorFillType,
+					colorFillType   = proto.colorFillType,
+					ColorBlendEdgeLines = proto.ColorBlendEdgeLines,
+					outer           = loop,
+					holes           = mergedHoles,
+					density         = baseD,
+					edgeRows        = baseER,
+					motorSpeed      = baseMS,
 				})
+
 			end
 		end
 	end
 
 	return final
 end
+
 
 -- Visualize the border of all polygons in a list
 local function visualizePolygons(finalList, yHeight)
@@ -1139,6 +1315,7 @@ local function visualizeFillLines(polygons, yHeight)
 
 	for _, poly in ipairs(polygons) do
 		for _, seg in ipairs(poly.fillLines or {}) do
+			if math.random(1,10) == 1 then task.wait(0.03) end
 			-- pick the segment color first, fall back to polygon color
 			local segColorId = seg.colorId or poly.colorId
 			local col = colorMap[segColorId] or Color3.new(1,1,1)
@@ -1160,47 +1337,6 @@ local function visualizeFillLines(polygons, yHeight)
 			beam.Width0, beam.Width1 = 0.05, 0.05
 		end
 	end
-end
-
-
--- Offset a loop of points by a given distance
-local function offsetLoop(loop, dist)
-	loop = ensureCCW(loop)
-	local n = #loop
-	if n < 3 then return nil end
-
-	local inset = {}
-	for i = 1, n do
-		local prev = loop[(i-2) % n + 1]
-		local curr = loop[i]
-		local next = loop[ i % n + 1 ]
-
-		-- compute inward normals on the two edges meeting at 'curr'
-		local e1x, e1z = curr[1]-prev[1], curr[2]-prev[2]
-		local n1x, n1z = -e1z, e1x
-		n1x, n1z = norm(n1x, n1z)
-
-		local e2x, e2z = next[1]-curr[1], next[2]-curr[2]
-		local n2x, n2z = -e2z, e2x
-		n2x, n2z = norm(n2x, n2z)
-
-		-- average those two inward normals, renormalize
-		local ax, az = (n1x + n2x)/2, (n1z + n2z)/2
-		ax, az = norm(ax, az)
-
-		-- move the vertex inward by 'dist'
-		inset[#inset+1] = {
-			curr[1] + ax * dist,
-			curr[2] + az * dist,
-		}
-	end
-
-	-- if it collapsed to zero area, give up
-	if polygonArea(inset) <= 1e-6 then
-		return nil
-	end
-
-	return inset
 end
 
 -- Remove Invalid points
@@ -1225,7 +1361,7 @@ local function pruneLoop(loop, origOuter, holes)
 	return #out >= 3 and out or nil
 end
 
--- build horizontal fill lines across the innermost inset ring
+-- Build horizontal fill lines across the innermost inset ring
 local function splitFillLineAtZ(x1, x2, z, holes)
 	local intervals = { { x1, x2 } }
 
@@ -1246,6 +1382,43 @@ local function splitFillLineAtZ(x1, x2, z, holes)
 			if not h2 then break end
 			for j = #intervals, 1, -1 do
 				local a,b = intervals[j][1], intervals[j][2]
+				if not (h2 <= a or h1 >= b) then
+					local pieces = {}
+					if h1 > a then pieces[#pieces+1] = { a, h1 } end
+					if h2 < b then pieces[#pieces+1] = { h2, b } end
+					table.remove(intervals, j)
+					for k = #pieces, 1, -1 do
+						table.insert(intervals, j, pieces[k])
+					end
+				end
+			end
+		end
+	end
+
+	return intervals
+end
+
+-- Build vertical fill lines across the innermost inset ring
+local function splitFillLineAtX(z1, z2, x, holes)
+	local intervals = { { z1, z2 } }
+
+	for _, hole in ipairs(holes) do
+		local zs = {}
+		for i = 1, #hole do
+			local A, B = hole[i], hole[(i % #hole) + 1]
+			local xA, xB = A[1], B[1]
+			if (xA < x and xB >= x) or (xB < x and xA >= x) then
+				local t = (x - xA) / (xB - xA)
+				zs[#zs+1] = A[2] + t * (B[2] - A[2])
+			end
+		end
+		table.sort(zs)
+
+		for i = 1, #zs, 2 do
+			local h1, h2 = zs[i], zs[i+1]
+			if not h2 then break end
+			for j = #intervals, 1, -1 do
+				local a, b = intervals[j][1], intervals[j][2]
 				if not (h2 <= a or h1 >= b) then
 					local pieces = {}
 					if h1 > a then pieces[#pieces+1] = { a, h1 } end
@@ -1311,61 +1484,138 @@ local function buildChunkBundle(chunks, startBase62Id, maxCount, maxBytes)
 	return assembled, "bundle"
 end
 
---Fill polygon with horizontal line segments avoidng holes
+--Fill polygon with line segments
 local function buildFillLinesForPolygon(poly)
+
 	poly.fillLines = {}
 
 	local edgeLoops = poly.edgeLoops or {}
-	local inner = edgeLoops[#edgeLoops]
-	if not inner then return end
-
-	local minX, maxX = inner[1][1], inner[1][1]
-	local minZ, maxZ = inner[1][2], inner[1][2]
-	for _, pt in ipairs(inner) do
-		minX = math.min(minX, pt[1])
-		maxX = math.max(maxX, pt[1])
-		minZ = math.min(minZ, pt[2])
-		maxZ = math.max(maxZ, pt[2])
+	if #edgeLoops == 0 then
+		return
 	end
+
+	local inner = edgeLoops[#edgeLoops]
+	if not inner or #inner == 0 then
+		return
+	end
+
+	local first = inner[1]
+	local minX, maxX = first[1], first[1]
+	local minZ, maxZ = first[2], first[2]
+
+	for _, pt in ipairs(inner) do
+		local x = pt[1] :: number
+		local z = pt[2] :: number
+
+		minX = math.min(minX, x)
+		maxX = math.max(maxX, x)
+		minZ = math.min(minZ, z)
+		maxZ = math.max(maxZ, z)
+	end
+
 
 	local d = poly.density or 0
 	if d <= 0 then return end
 
-	local zTop = maxZ - d
-	local zBottom = minZ + d
-	if zTop < zBottom then return end
+	local function buildHorizontal()
+		local lines = {}
 
-	local clampLoX = minX + d
-	local clampHiX = maxX - d
-	if clampLoX >= clampHiX then return end
+		local zTop = maxZ - d
+		local zBottom = minZ + d
+		if zTop < zBottom then return lines end
 
-	for z = zTop, zBottom, -d do
-		local xs = {}
-		for i = 1, #inner do
-			local A, B = inner[i], inner[(i % #inner) + 1]
-			local zA, zB = A[2], B[2]
-			if (zA < z and zB >= z) or (zB < z and zA >= z) then
-				local t = (z - zA) / (zB - zA)
-				xs[#xs+1] = A[1] + t * (B[1] - A[1])
+		local clampLoX = minX + d
+		local clampHiX = maxX - d
+		if clampLoX >= clampHiX then return lines end
+
+		for z = zTop, zBottom, -d do
+			local xs = {}
+			for i = 1, #inner do
+				local A, B = inner[i], inner[(i % #inner) + 1]
+				local zA, zB = A[2], B[2]
+				if (zA < z and zB >= z) or (zB < z and zA >= z) then
+					local t = (z - zA) / (zB - zA)
+					xs[#xs+1] = A[1] + t * (B[1] - A[1])
+				end
 			end
-		end
-		table.sort(xs)
+			table.sort(xs)
 
-		for i = 1, #xs - 1, 2 do
-			local x1, x2 = xs[i], xs[i+1]
-			x1 = math.clamp(x1, clampLoX, clampHiX)
-			x2 = math.clamp(x2, clampLoX, clampHiX)
+			for i = 1, #xs - 1, 2 do
+				local x1, x2 = xs[i], xs[i+1]
+				x1 = math.clamp(x1, clampLoX, clampHiX)
+				x2 = math.clamp(x2, clampLoX, clampHiX)
 
-			if x2 > x1 then
-				local safe = splitFillLineAtZ(x1, x2, z, poly.holes or {})
-				for _, iv in ipairs(safe) do
-					poly.fillLines[#poly.fillLines+1] = {
-						start = { x = iv[1], z = z },
-						["end"] = { x = iv[2], z = z },
-					}
+				if x2 > x1 then
+					local safe = splitFillLineAtZ(x1, x2, z, poly.holes or {})
+					for _, iv in ipairs(safe) do
+						lines[#lines+1] = {
+							start = { x = iv[1], z = z },
+							["end"] = { x = iv[2], z = z },
+						}
+					end
 				end
 			end
 		end
+
+		return lines
+	end
+
+	local function buildVertical()
+		local lines = {}
+
+		local xRight = maxX - d
+		local xLeft = minX + d
+		if xRight < xLeft then return lines end
+
+		local clampLoZ = minZ + d
+		local clampHiZ = maxZ - d
+		if clampLoZ >= clampHiZ then return lines end
+
+		for x = xRight, xLeft, -d do
+			local zs = {}
+			for i = 1, #inner do
+				local A, B = inner[i], inner[(i % #inner) + 1]
+				local xA, xB = A[1], B[1]
+				if (xA < x and xB >= x) or (xB < x and xA >= x) then
+					local t = (x - xA) / (xB - xA)
+					zs[#zs+1] = A[2] + t * (B[2] - A[2])
+				end
+			end
+			table.sort(zs)
+
+			for i = 1, #zs - 1, 2 do
+				local z1, z2 = zs[i], zs[i+1]
+				z1 = math.clamp(z1, clampLoZ, clampHiZ)
+				z2 = math.clamp(z2, clampLoZ, clampHiZ)
+
+				if z2 > z1 then
+					local safe = splitFillLineAtX(z1, z2, x, poly.holes or {})
+					for _, iv in ipairs(safe) do
+						lines[#lines+1] = {
+							start = { x = x, z = iv[1] },
+							["end"] = { x = x, z = iv[2] },
+						}
+					end
+				end
+			end
+		end
+
+		return lines
+	end
+
+	-- build both and choose the one with fewer lines
+	local horizontalLines = buildHorizontal()
+	local verticalLines  = buildVertical()
+
+	local nH = #horizontalLines
+	local nV = #verticalLines
+
+	if nV > 0 and (nV < nH or nH == 0) then
+		poly.fillLines = verticalLines
+		poly.fillOrientation = "vertical"
+	else
+		poly.fillLines = horizontalLines
+		poly.fillOrientation = "horizontal"
 	end
 end
 
@@ -1464,8 +1714,9 @@ local colorFillMap = {
 			return
 		end
 
+		-- Polygon has no fill lines, nothing to color
 		if not poly.fillLines or #poly.fillLines == 0 then
-			print("MajorPoint: no fill lines to color")
+			---print("MajorPoint: no fill lines to color")
 			return
 		end
 
@@ -1644,8 +1895,8 @@ local colorFillMap = {
 					end
 
 					-- Overall probability of picking the neighbor:
-					--  - scaled by noiseStrength (from ColorBlendPrecent)
-					--  - zero when neighbor is "far", max ~0.5*noiseStrength at boundaries
+					-- - scaled by noiseStrength (from ColorBlendPrecent)
+					-- - zero when neighbor is "far", max ~0.5*noiseStrength at boundaries
 					local pSecond = baseSecond * noiseStrength
 
 					local noiseVal = hashNoise01(midX, midZ, COLOR_NOISE_SEED)
@@ -1851,14 +2102,124 @@ local colorFillMap = {
 	end
 }
 
+-- 2D segment length
+local function segmentLength2D(x1, z1, x2, z2)
+	local dx = x2 - x1
+	local dz = z2 - z1
+	return math.sqrt(dx*dx + dz*dz)
+end
+
+-- Compute length of all loops: { { {x,z}, ... }, { ... }, ... }
+local function totalLoopLength(loops)
+	local total = 0
+	for _, loop in ipairs(loops or {}) do
+		if #loop >= 2 then
+			for i = 1, #loop do
+				local a = loop[i]
+				local b = loop[(i % #loop) + 1]
+				total += segmentLength2D(a[1], a[2], b[1], b[2])
+			end
+		end
+	end
+	return total
+end
+
+-- Compute length + detailed list for fillLines
+local function analyzeFillLines(fillLines)
+	local lines = fillLines or {}
+	local totalLen = 0
+	local segments = {} -- per-segment info
+
+	for idx, seg in ipairs(lines) do
+		local sx = seg.start.x
+		local sz = seg.start.z
+		local ex = seg["end"].x
+		local ez = seg["end"].z
+		local len = segmentLength2D(sx, sz, ex, ez)
+
+		totalLen += len
+
+		segments[#segments+1] = {
+			index = idx,
+			length = len,
+			startX = sx,
+			startZ = sz,
+			endX   = ex,
+			endZ   = ez,
+			colorId = seg.colorId, -- may be nil; fine
+		}
+	end
+
+	return totalLen, #lines, segments
+end
+
+-- MASTER: compute debug stats for all polygons
+local function computePolygonDebugStats(polygons)
+	local stats = {
+		polygonCount = #polygons,
+		totalOuterArea = 0,
+		totalOuterPerimeter = 0,      -- only outer loops[1]
+		totalEdgeLoopLength = 0,      -- all edgeLoops
+		totalFillLineLength = 0,
+		totalFillSegments = 0,
+		perPolygon = {},              -- detailed per-poly info
+	}
+
+	for idx, poly in ipairs(polygons) do
+		local outer = poly.outer or {}
+		local edgeLoops = poly.edgeLoops or {}
+		local fillLines = poly.fillLines or {}
+
+		-- outer area / perimeter
+		local area = (#outer >= 3) and polygonArea(outer) or 0
+		local outerPerimeter = 0
+		if #outer >= 2 then
+			for i = 1, #outer do
+				local a = outer[i]
+				local b = outer[(i % #outer) + 1]
+				outerPerimeter += segmentLength2D(a[1], a[2], b[1], b[2])
+			end
+		end
+
+		-- all edge loop length
+		local allEdgeLoopLen = totalLoopLength(edgeLoops)
+
+		-- fillLines
+		local fillLen, fillCount, fillSegments = analyzeFillLines(fillLines)
+
+		stats.totalOuterArea       += area
+		stats.totalOuterPerimeter  += outerPerimeter
+		stats.totalEdgeLoopLength  += allEdgeLoopLen
+		stats.totalFillLineLength  += fillLen
+		stats.totalFillSegments    += fillCount
+
+		stats.perPolygon[#stats.perPolygon+1] = {
+			index        = idx,
+			instanceName = poly.instance and poly.instance.Name or ("[poly "..idx.."]"),
+			colorId      = poly.colorId,
+			area         = area,
+			outerPerimeter = outerPerimeter,
+			edgeLoopLength = allEdgeLoopLen,
+			fillLineLength = fillLen,
+			fillSegmentCount = fillCount,
+			fillSegments = fillSegments,     -- every individual segment
+			edgeLoopCount = #edgeLoops,
+		}
+	end
+
+	return stats
+end
+
 -- Build polygons from the union of all the parts
 local function generatePolygons()
-	-- … your existing gather / carve / union / attach holes …
-	local frags = carveFragments(gatherInitialObjects())
+
+	local initial = gatherInitialObjects()
+	local frags = carveFragments(initial)
 	local finalList = clusterAndUnion(frags)
 
-	-- attach void-holes deterministically to the *lowest-index* container
-	local rawVoids = detectVoids(gatherInitialObjects())
+	-- Now detect voids using the *final* combined shapes, not the raw initial shapes
+	local rawVoids = detectVoidsOnFinal(finalList)
+
 
 	-- bucket holes per final entry
 	local holesByEntry = {}
@@ -1874,7 +2235,7 @@ local function generatePolygons()
 		for _, e in ipairs(finalList) do
 			if pointInPolygon(c, e.outer) then
 				-- read the Index back off the instance (clusterAndUnion dropped 'index')
-				local idx = getWithDefault(e.instance, "Index", 0)
+				local idx = getWithDefault(e.instance, "Index", 9999)
 				if idx < bestIdx then
 					bestIdx = idx
 					bestE = e
@@ -1892,6 +2253,53 @@ local function generatePolygons()
 		e.holes = unionLoops(holesByEntry[e] or {})
 	end
 
+	-- shrink OUTER by half density before borders/fill outter loop
+	for _, poly in ipairs(finalList) do
+		local d = poly.density or 0
+		if d > 0 and poly.outer and #poly.outer >= 3 then
+			-- move the outer border inward by half of the density
+			local inset = offsetLoop(poly.outer, d * 0.5)
+			if inset and #inset >= 3 and polygonArea(inset) > 1e-6 then
+				poly.outer = inset
+			else
+				-- if it collapses, keep original so we don't explode
+				warn(("[%s] globalInset: offsetLoop collapsed at d=%.3f, keeping original outer")
+					:format(poly.instance and poly.instance.Name or "<nil>", d * 0.5))
+			end
+		end
+	end
+
+	-- choose fill mode per polygon
+	for _, poly in ipairs(finalList) do
+		local fillType = poly.colorFillType or "Fill"
+		local fn = colorFillMap[fillType]
+
+		if not fn then
+			warn(("[colorFill] Unknown fill type '%s' on %s, falling back to 'Fill'")
+				:format(
+					tostring(fillType),
+					poly.instance and poly.instance:GetFullName() or "<poly>"
+				)
+			)
+			fn = colorFillMap.Fill
+		end
+
+		fn(poly, {
+			colorId = poly.colorId,
+			colorId2 = poly.colorId2,
+			colorId3 = poly.colorId3,
+			colorId4 = poly.colorId4,
+			colorsUsed = poly.colorsUsed,
+			chunkLength = poly.chunkLength,
+			colorBlendFace = poly.colorBlendFace,
+			colorBlendPrecent = poly.colorBlendPrecent,
+			colorBlendEdgeLines = poly.colorBlendEdgeLines,
+			density = poly.density,
+			edgeRows = poly.edgeRows,
+			motorSpeed = poly.motorSpeed,
+			instance = poly.instance,
+		})
+	end
 
 	-- choose fill mode per polygon
 	for _, poly in ipairs(finalList) do
@@ -1907,6 +2315,7 @@ local function generatePolygons()
 			chunkLength = poly.chunkLength,
 			colorBlendFace = poly.colorBlendFace,
 			colorBlendPrecent = poly.colorBlendPrecent,
+			ColorBlendEdgeLines = poly.ColorBlendEdgeLines,
 			density = poly.density,
 			edgeRows = poly.edgeRows,
 			motorSpeed = poly.motorSpeed,
@@ -1915,7 +2324,6 @@ local function generatePolygons()
 	end
 
 	return finalList
-
 end
 
 -- Generate gcode commands
@@ -1989,7 +2397,6 @@ local function generateGCode(polygons)
 		-- track authoritative absolute positions
 		absXSteps, absZSteps = xAbsSteps, zAbsSteps
 	end
-
 
 	-- Move to absolute world position (studs) by converting to absolute steps
 	local function emitMoveToWorldStuds(targetXStuds, targetZStuds, delayTenths)
@@ -2112,7 +2519,7 @@ local function generateGCode(polygons)
 
 			--------------------------------------------------------
 			-- 2) FILL LINES for this color
-			--    Prefer per-color list; fall back to base behavior.
+			-- Prefer per-color list; fall back to base behavior.
 			--------------------------------------------------------
 			local segList = nil
 
@@ -2318,7 +2725,7 @@ local function sendToArduino(varName, varId, varType, varPremission, updateStrat
 			if (varName == "messageToArduino") then
 
 				lastDataOut = tick() * 1000
-				game.Workspace.infoScreen.SurfaceGui.Frame.messageToArduino.Text = tostring(varValue)
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToArduino.Text = tostring(varValue)
 			end
 
 		elseif response.StatusCode == 400 then
@@ -2339,6 +2746,10 @@ end
 
 -- Read data saved on cloud from arduino
 local function readCloudMessage(processedGCode)
+	if messageToServer == nil then
+		warn "Https returned nil, no processing compleated"
+		return
+	end
 	local uniqueMessageID = string.sub(messageToServer, 1, 5)
 
 	-- Check its at least 5 characters long
@@ -2348,13 +2759,11 @@ local function readCloudMessage(processedGCode)
 		-- Ensure it is a new message
 		if IDNumber ~= lastMessageFromArduinoNumber then
 
-			-- Delay https requests
-			task.wait(0.1)
-
 			lastMessageFromArduinoNumber = IDNumber
 			local messageToServer = string.sub(messageToServer, 6)
 
-			game.Workspace.infoScreen.SurfaceGui.Frame.infoID.Text = ("IN #"..IDNumber)
+			game.Workspace.infoScreen.SurfaceGui.Frame.Frame.infoID.Text = ("IN #"..IDNumber)
+			game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text = messageToServer
 
 			-- Last command executed 7 digits 5-2
 			mostRecentConfirmedExecutedCommand = string.sub(messageToServer, -7)
@@ -2362,7 +2771,7 @@ local function readCloudMessage(processedGCode)
 			lastDataIn = tick() * 1000
 
 			-- Arduino sending bulk data
-			if string.sub(messageToServer, 1, 1) == "D" then
+			if string.sub(messageToServer, 1, 1) == "B" then
 				messageToServer = string.sub(messageToServer, 2)
 
 				-- Split the message into tokens:
@@ -2394,11 +2803,11 @@ local function readCloudMessage(processedGCode)
 				-- Unpack 5 booleans from one base62 char
 				local function unpackFlags(ch)
 					local n = b62digitToNum(ch)
-					local b0 = bit32.band(n, bit32.lshift(1, 0)) ~= 0 -- scriptErrorPaused
-					local b1 = bit32.band(n, bit32.lshift(1, 1)) ~= 0 -- scriptWait
-					local b2 = bit32.band(n, bit32.lshift(1, 2)) ~= 0 -- scriptGCode
-					local b3 = bit32.band(n, bit32.lshift(1, 3)) ~= 0 -- motorEnabled
-					local b4 = bit32.band(n, bit32.lshift(1, 4)) ~= 0 -- fanEnabled
+					local b0 = bit32.band(n, bit32.lshift(1, 0)) ~= 0
+					local b1 = bit32.band(n, bit32.lshift(1, 1)) ~= 0
+					local b2 = bit32.band(n, bit32.lshift(1, 2)) ~= 0
+					local b3 = bit32.band(n, bit32.lshift(1, 3)) ~= 0
+					local b4 = bit32.band(n, bit32.lshift(1, 4)) ~= 0
 					return b0, b1, b2, b3, b4
 				end
 
@@ -2408,25 +2817,28 @@ local function readCloudMessage(processedGCode)
 					unpackFlags(flagsChar)
 
 				-- Shifted indices for the rest (compact format)
-				local ArduinoXLeaverTriggerd = asBool(tokens[2])
+				local ArduinoXLeverTriggerd = asBool(tokens[2])
 				local ArduinoXStepPosition = b62(tokens[3])
 				local ArduinoXStepTotal = b62(tokens[4])
-				local ArduinoZLeaverTriggerd = asBool(tokens[5])
-				local ArduinoZStepPosition = b62(tokens[6])
-				local ArduinoZStepTotal = b62(tokens[7])
-				local ArduinoRMagneticEncoderNumber = tonumber(tokens[8]) or 0
-				local ArduinoRStepRotation = tonumber(tokens[9]) or 0
-				local ArduinoRStepTotal = b62(tokens[10])
+				local ArduinoYLeverTriggerd = asBool(tokens[5])
+				local ArduinoYStepPosition = b62(tokens[6])
+				local ArduinoYStepTotal = b62(tokens[7])
+				local ArduinoZLeverTriggerd = asBool(tokens[8])
+				local ArduinoZStepPosition = b62(tokens[9])
+				local ArduinoZStepTotal = b62(tokens[10])
+				local ArduinoRMagneticEncoderBool = asBool(tokens[11])
+				local ArduinoRStepRotation = tonumber(tokens[12]) or 0
+				local ArduinoRStepTotal = b62(tokens[13])
 
 				-- NEW: uptime/downtime (deciseconds from base62 width-3)
-				local ArduinoMotorUpDS = b62(tokens[11] or "0") -- deciseconds
-				local ArduinoMotorDownDS = b62(tokens[12] or "0") -- deciseconds
+				local ArduinoMotorUpDS = b62(tokens[14] or "0") -- deciseconds
+				local ArduinoMotorDownDS = b62(tokens[15] or "0") -- deciseconds
 				-- If you want seconds:
 				local ArduinoMotorUpSec = ArduinoMotorUpDS / 10
 				local ArduinoMotorDownSec = ArduinoMotorDownDS / 10
 
 				-- UI updates
-				local frame = game.Workspace.infoScreen.SurfaceGui.Frame
+				local frame = game.Workspace.infoScreen.SurfaceGui.Frame.Frame --[[
 				frame.motorXPos.Text = tostring(ArduinoXStepPosition)
 				frame.motorZPos.Text = tostring(ArduinoZStepPosition)
 				frame.motorRPos.Text = tostring(ArduinoRStepRotation)
@@ -2435,9 +2847,10 @@ local function readCloudMessage(processedGCode)
 				frame.motorZStepCount.Text = tostring(ArduinoZStepTotal)
 				frame.motorRStepCount.Text = tostring(ArduinoRStepTotal)
 
-				frame.motorXLeaver.Text = ArduinoXLeaverTriggerd and "Leaver Activated" or "Leaver Off"
-				frame.motorZLeaver.Text = ArduinoZLeaverTriggerd and "Leaver Activated" or "Leaver Off"
-				frame.motorRSensor.Text = tostring(ArduinoRMagneticEncoderNumber)
+				frame.motorXLever.Text = ArduinoXLeverTriggerd and "Activated" or "Off"
+				--frame.motorYLever.Text = ArduinoYLeverTriggerd and "Activated" or "Off"
+				frame.motorZLever.Text = ArduinoZLeverTriggerd and "Activated" or "Off"
+				frame.motorRSensor.Text = ArduinoRMagneticEncoderBool and "Off" or "Activated"
 
 				frame.FansRunning.Text = ArduinoFanEnabled and "Fans Running" or "Fans Off"
 				frame.SteppersEngaged.Text = ArduinoMotorEnabled and "Steppers Engaged" or "Steppers Off"
@@ -2448,7 +2861,7 @@ local function readCloudMessage(processedGCode)
 
 				frame.MotorUpTime.Text = string.format("Motors Up: %.1fs", ArduinoMotorUpSec)
 				frame.MotorDownTime.Text = string.format("Motors Down: %.1fs", ArduinoMotorDownSec)
-
+--]]
 				-- Extract payload/command ids from the 7-char tail
 				local cmdStr = tostring(mostRecentConfirmedExecutedCommand or "")
 				local payloadIdB62 = string.sub(cmdStr, 1, 5)
@@ -2459,17 +2872,19 @@ local function readCloudMessage(processedGCode)
 				frame.lastExecutedPayloadID.Text = "PLOAD #" .. tostring(payloadIdDec)
 				frame.lastExecutedCommand.Text = "CMD #" .. tostring(cmdIdDec)
 
-				frame.messageToServer.Text = messageToServer
+				-- Update client
+				eventToClient:FireAllClients("B",
+					ArduinoErrorPaused and "Error Stop" or "Running Smooth", ArduinoWaitPaused and "Waiting Paused" or "Running Active", ArduinoScriptGCode and "Gcode Compleated" or "Running Gcode",
+					ArduinoMotorEnabled and "Steppers Engaged" or "Steppers Off", ArduinoFanEnabled and "Fans Running" or "Fans Off",
+					ArduinoXLeverTriggerd and "Activated" or "Off", ArduinoXStepPosition, ArduinoXStepTotal ,
+					ArduinoYLeverTriggerd and "Activated" or "Off", ArduinoYStepPosition, ArduinoYStepTotal ,
+					ArduinoZLeverTriggerd and "Activated" or "Off", ArduinoZStepPosition, ArduinoZStepTotal ,
+					ArduinoRMagneticEncoderBool , ArduinoRStepRotation , ArduinoRStepTotal ,
+					ArduinoMotorUpSec , ArduinoMotorDownSec ,
+					"PLOAD #" .. tostring(payloadIdDec), "CMD #" .. tostring(cmdIdDec), messageToServer, game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToArduino.Text)
 				return
-			end
 
-
-			-- Arduino sending imporntant data
-			if string.sub(messageToServer, 1, 1) == "I" then
-				messageToServer = string.sub(messageToServer, 2)
-				imporntantMessage = messageToServer
-
-				game.Workspace.infoScreen.SurfaceGui.Frame.messageToServer.Text = messageToServer
+			else
 
 				-- Arduino requesting data
 				if string.sub(messageToServer, 1, 1) == "R" then
@@ -2507,54 +2922,88 @@ local function readCloudMessage(processedGCode)
 					return
 				end
 
-				if string.sub(imporntantMessage, 1, 1) == "E" then
-					imporntantMessage = string.sub(imporntantMessage, 2)
-					game.Workspace.infoScreen.SurfaceGui.Frame.imporntantMessage.Text = "Error "..imporntantMessage
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList4.Text = game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList3.Text
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList3.Text = game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList2.Text
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList2.Text = game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList1.Text
+
+				if string.sub(messageToServer, 1, 1) == "E" then
+					messageToServer = string.sub(messageToServer, 2)
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text = "Error "..messageToServer
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList1.Text = ("IN "..tostring(math.round(tick() * 1000-codeStartTime)/1000).." ==> "..game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text)
 					return
 				end
 
-				if string.sub(imporntantMessage, 1, 1) == "S" then
-					imporntantMessage = string.sub(imporntantMessage, 2)
-					game.Workspace.infoScreen.SurfaceGui.Frame.imporntantMessage.Text = "Success "..imporntantMessage
+				if string.sub(messageToServer, 1, 1) == "S" then
+					messageToServer = string.sub(messageToServer, 2)
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text = "Success "..messageToServer
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList1.Text = ("IN "..tostring(math.round(tick() * 1000-codeStartTime)/1000).." ==> "..game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text)
 					return
 				end
 
-				if string.sub(imporntantMessage, 1, 1) == "P" then
-					imporntantMessage = string.sub(imporntantMessage, 2)
-					game.Workspace.infoScreen.SurfaceGui.Frame.imporntantMessage.Text = "Ping return "..imporntantMessage
-					waitingForPing = false
+				if string.sub(messageToServer, 1, 1) == "P" then
+					messageToServer = string.sub(messageToServer, 2)
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text = "Ping return "..messageToServer
+					game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList1.Text = ("IN "..tostring(math.round(tick() * 1000-codeStartTime)/1000).." ==> "..game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text)
+					waitingForResponce = false
 					return
 				end
+
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text = messageToServer
+				game.Workspace.infoScreen.SurfaceGui.Frame.Frame.importantMessageList1.Text = ("IN "..tostring(math.round(tick() * 1000-codeStartTime)/1000).." ==> "..game.Workspace.infoScreen.SurfaceGui.Frame.Frame.messageToServer.Text)
+
 				warn("Arduino send data (".. string.sub(messageToServer, 1, 1)..") ("..string.sub(messageToServer, 2)..") no processing occured")
 			end	
 		end
+	else 
+		warn("message less than ID length of 5 "..messageToServer)
 	end
 end
 
-local polys = generatePolygons()
-visualizePolygons(polys, 1) -- borders + holes
-task.wait(2)
-visualizeEdgeLoops(polys, 1) -- edge-rows
-task.wait(2)
-visualizeFillLines(polys, 1) -- interior fill lines
+local function startNewRug()
 
-local code = generateGCode(polys)
+	-- Generate polygons
+	local polys = generatePolygons()
 
-local processedGCode = processGCodeForTransport(code)
+	-- Add line segments for borders and holes
+	visualizePolygons(polys, 1)
 
--- Kick off the "repeat I T<id62> every 5s" cycle using the final payload's ID
-if #processedGCode > 0 then
-	local lastChunk = processedGCode[#processedGCode]
-	local id62 = string.sub(lastChunk, 1, 5)
-	startTPingCycle(id62)
+	-- Add lines for edge rows
+	visualizeEdgeLoops(polys, 1)
+
+	-- Fill in polygons
+	visualizeFillLines(polys, 1)
+
+	-- Generate gcode
+	local code = generateGCode(polys)
+
+	-- Set up gcode for transport
+	processedGCode = processGCodeForTransport(code)
+
+	-- Inform Arduino of new script for executing
+	if #processedGCode > 0 then
+		local lastChunk = processedGCode[#processedGCode]
+		local id62 = string.sub(lastChunk, 1, 5)
+		startTPingCycle(id62)
+	end
+
+	print(processedGCode)
+
+
+	-- Debug stats
+	local debugStats = computePolygonDebugStats(polys)
+
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.totalPolygonCount.Text = ("Polygons: "..debugStats.polygonCount)
+
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.totalPathDistance.Text = ("Total Line Path Inches "..math.round(debugStats.totalEdgeLoopLength + debugStats.totalFillLineLength))
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.totalPathLines.Text = ("Segments: "..debugStats.totalFillSegments)
+	--setNumberValue("TotalOuterArea", debugStats.totalOuterArea)
+	--setNumberValue("TotalOuterPerimeter", debugStats.totalOuterPerimeter)
+
+	--game.Workspace.infoScreen.SurfaceGui.Frame.totalPathLines.Text = ("Paths: ".. tostring(summarizeLines(polys).count))
+	--game.Workspace.infoScreen.SurfaceGui.Frame.totalPathDistance.Text = ("Total path distance: "..tostring(summarizeLines(polys).length))
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.totalPolygonSurface.Text = ("Area covered "..math.round(totalCoveredArea(polys)).. "² Inches")
+
 end
-
-print(processedGCode)
-
-game.Workspace.infoScreen.SurfaceGui.Frame.totalPolygonCount.Text = ("Polygons: ".."")
---game.Workspace.infoScreen.SurfaceGui.Frame.totalPathLines.Text = ("Paths: ".. tostring(summarizeLines(polys).count))
---game.Workspace.infoScreen.SurfaceGui.Frame.totalPathDistance.Text = ("Total path distance: "..tostring(summarizeLines(polys).length))
-game.Workspace.infoScreen.SurfaceGui.Frame.totalPolygonSurface.Text = ("Area coverd "..math.round(totalCoveredArea(polys)).. "² Inches")
 
 -- Event trigger from cliet
 eventToServer.OnServerEvent:Connect(function(player, text, order)
@@ -2567,8 +3016,12 @@ end)
 -- Constant read server loop
 while true do
 
+	if (processedGCode == "") then
+		startNewRug()
+	end
+
 	-- Read cloud
-	if os.time() - lastArduinoCloudRead > 0.44 then
+	if os.time() - lastArduinoCloudRead > 0.45 then
 		lastArduinoCloudRead = os.time()
 		messageToServer = readFromArduinoCloud(messageToServerID)
 		readCloudMessage(processedGCode)
@@ -2576,24 +3029,26 @@ while true do
 
 	-- Update connectivity info
 	if tick() * 1000 - lastDataIn > 12000 then
-		game.Workspace.infoScreen.SurfaceGui.Frame.scriptRunning.Text = "Communication Lost"
+		game.Workspace.infoScreen.SurfaceGui.Frame.Frame.scriptRunning.Text = "Communication Lost"
 	else
-		game.Workspace.infoScreen.SurfaceGui.Frame.scriptRunning.Text = "Connected"
+		game.Workspace.infoScreen.SurfaceGui.Frame.Frame.scriptRunning.Text = "Connected"
 	end
 
 	-- Ping if havent sent info recently
 	if tick() * 1000 - lastDataOut > 35000 then
-		task.wait(0.3)
+		task.wait(0.5)
 		sendToArduino("messageToArduino", messageToArduinoID, "String", "READ_WRITE", "ON_CHANGE", "IN")
 	end
 
-	game.Workspace.infoScreen.SurfaceGui.Frame.secondsFromInbound.Text = math.round(tick() * 1000 - lastDataIn)/1000
-	game.Workspace.infoScreen.SurfaceGui.Frame.secondsFromOutbound.Text = math.round(tick() * 1000 - lastDataOut)/1000
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.secondsFromInbound.Text = ("In "..math.round(tick() * 1000 - lastDataIn)/1000)
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.secondsFromOutbound.Text = ("Out "..math.round(tick() * 1000 - lastDataOut)/1000)
+	game.Workspace.infoScreen.SurfaceGui.Frame.Frame.scriptRunningTime.Text = ("Up ("..math.round(math.round(tick() * 1000 - codeStartTime)/1000))..")"
 
-	-- Re-send I T<id62> every 5 seconds until Arduino pings back
-	if waitingForPing then
+	eventToClient:FireAllClients("F", ("In "..math.round(tick() * 1000 - lastDataIn)/1000), ("Out "..math.round(tick() * 1000 - lastDataOut)/1000), ("Up ("..math.round(math.round(tick() * 1000 - codeStartTime)/1000))..")")
+	-- Re-send I T<id62> until Arduino pings back
+	if waitingForResponce then
 		local t = nowMs()
-		if t - lastTInstantAtMs >= 6000 then
+		if t - lastTInstantAtMs >= 15000 then
 			-- I + T<id62> so Arduino treats it as an immediate 'T' command
 			sendToArduino(
 				"messageToArduino",
@@ -2607,5 +3062,5 @@ while true do
 		end
 	end
 
-	task.wait(0.2)
+	task.wait(0.1)
 end
